@@ -1,174 +1,167 @@
-# ANTICATER Knob Control
+# 手轮控制台
 
-这个小项目的目标：把 `ANTICATER_MINI` 手轮做成一个按当前软件自动切换行为的 macOS 控制器。
+把 `ANTICATER_MINI` 蓝牙手轮变成 macOS 上的应用快捷控制器。
 
-## 当前结论
+你可以为不同 App 配置不同动作。例如：
 
-你的手轮在 macOS 里被识别为蓝牙 HID 设备：
+- 浏览器里旋转切换标签页
+- Cursor / VS Code 里旋转切换编辑器
+- Photoshop 里旋转调整画笔
+- DaVinci Resolve 里旋转移动时间线
+- 全局默认状态下控制音量、媒体播放
 
-- 产品名：`ANTICATER_MINI`
-- 厂商：`CXKJ`
-- 连接方式：Bluetooth Low Energy
-- HID 类型：复合输入设备
-- 能力：鼠标指针、滚轮、鼠标按钮、键盘、媒体控制
+支持 5 个手轮动作：
 
-这意味着它可以被做成：
+```text
+左旋
+右旋
+按下
+按住左旋
+按住右旋
+```
 
-- 在浏览器里切换标签页
-- 在 VS Code / Cursor 里切换文件或打开命令面板
-- 在 Photoshop 里调笔刷大小
-- 在 DaVinci Resolve 里移动时间线或播放暂停
-- 在全局状态下控制音量、亮度或窗口
+## 系统要求
 
-## 推荐方向
+- macOS
+- ANTICATER_MINI 手轮
+- Xcode Command Line Tools
 
-第一阶段先不要直接改固件，也不要一上来写很重的 GUI。
-
-更稳的路线是：
-
-1. 用 `/Applications/ANTICATER.app` 确认旋转和按下分别会输出什么。
-2. 先把旋转/按下配置成稳定、少见、不容易和日常输入冲突的快捷键。
-3. 写一个 macOS 后台小程序，根据当前前台 App 把这些输入翻译成不同动作。
-4. 等规则稳定后，再考虑做菜单栏图标、配置界面和开机自启。
-
-## 我们接下来要做什么
-
-最小可行版本应该包含：
-
-- 设备输入探测：确认左旋、右旋、按下分别是什么事件。
-- 当前 App 识别：读取前台应用的 bundle id。
-- 映射配置：按 app 定义 `rotate_left`、`rotate_right`、`press`。
-- 动作执行：发送快捷键、执行 AppleScript 或调用系统命令。
-
-## 文件结构
-
-- `notes/device-profile.md`：目前查到的设备信息。
-- `config/app-mapping.example.json`：第一版应用映射草案。
-- `notes/roadmap.md`：实现路线和技术选型。
-- `tools/input-probe.swift`：输入探测工具。
-
-## 运行输入探测
+如果没有安装 Xcode Command Line Tools，可以运行：
 
 ```bash
-./run-input-probe.sh
+xcode-select --install
 ```
 
-运行后依次左旋、右旋、按下手轮，观察终端输出。
+## 下载和运行
 
-如果提示无法创建事件监听，需要给运行它的终端或 Codex 权限：
-
-```text
-系统设置 -> 隐私与安全性 -> 辅助功能
-系统设置 -> 隐私与安全性 -> 输入监控
-```
-
-授权后请重新运行一次脚本。
-
-如果普通输入探测没有任何输出，改用更底层的 HID 探测：
+克隆仓库：
 
 ```bash
-./run-hid-probe.sh
+git clone https://github.com/dreamug/anticater-knob-control.git
+cd anticater-knob-control
 ```
 
-确认 HID usage 后，可以运行语义监听器：
-
-```bash
-./run-knob-monitor.sh
-```
-
-它会把当前设备事件翻译成：
-
-```text
-rotate_left
-rotate_right
-press
-press_rotate_left
-press_rotate_right
-```
-
-其中 `press_rotate_left` 和 `press_rotate_right` 需要先用 HID probe 确认组合手势输出。
-
-正式执行映射时运行：
-
-```bash
-./run-knob-mapper.sh
-```
-
-它会读取：
-
-```text
-config/app-mapping.json
-```
-
-如果这个文件不存在，会回退到：
-
-```text
-config/app-mapping.example.json
-```
-
-动作支持：
-
-```text
-shortcut / key: 发送键盘快捷键或媒体键
-mouse: 点击当前鼠标位置
-scroll: 发送滚动
-shell: 执行 shell 命令
-noop: 什么都不做
-```
-
-## 图形界面
-
-构建并启动原生 macOS 图形界面：
+启动图形界面：
 
 ```bash
 ./run-gui.sh
 ```
 
-也可以先构建 `.app`：
+这个命令会自动构建并打开 `手轮控制台.app`。
+
+也可以手动构建：
 
 ```bash
 ./build-gui.sh
 open build/ANTICATERKnobControl.app
 ```
 
-图形界面可以：
+## 第一次使用
 
-- 查看当前前台 App 和 bundle id。
-- 添加当前 App 到映射列表。
-- 编辑全局默认映射和每个 App 的五个手轮动作。
-- 保存到 `config/app-mapping.json`。
-- 直接启动 / 停止手轮监听。
+1. 打开 `手轮控制台`
+2. 点击右上角「启动监听」
+3. 如果 macOS 弹出权限提示，请允许
+4. 如果没有弹窗，请手动打开权限
 
-如果点击「启动监听」后没有响应，请给 `ANTICATER Knob Control` 这个 App 开启：
+需要开启：
 
 ```text
 系统设置 -> 隐私与安全性 -> 辅助功能
 系统设置 -> 隐私与安全性 -> 输入监控
 ```
 
-## 发布到 GitHub
+把 `手轮控制台` 加进去后，重新打开 App 或再次点击「启动监听」。
 
-建议把这个目录作为独立仓库发布：
+## 配置应用动作
 
-```bash
-cd /Users/kuanyu/Projects/claudecode_learning/anticater-knob-control
-git init
-git add .
-git commit -m "Initial ANTICATER knob control app"
+左侧会显示：
+
+- 全局默认
+- 已配置应用
+- 发现的应用
+
+使用方式：
+
+1. 在「发现的应用」里搜索你要配置的 App
+2. 点击应用，把它加入配置列表
+3. 在右侧为 5 个手轮动作设置行为
+4. 点击「保存配置」
+
+动作类型：
+
+```text
+快捷键：发送组合键，例如 ⌘ + ⇧ + P
+按键：发送单个按键或媒体键
+鼠标：点击当前鼠标位置
+滚动：发送滚轮滚动
+命令：执行 shell 命令
+无动作：忽略这个手势
 ```
 
-创建 GitHub 仓库后添加远程地址：
+配置会保存到：
 
-```bash
-git remote add origin git@github.com:YOUR_NAME/anticater-knob-control.git
-git branch -M main
-git push -u origin main
+```text
+config/app-mapping.json
 ```
 
-如果使用 GitHub CLI：
+仓库里提供了示例配置：
 
-```bash
-gh repo create anticater-knob-control --public --source=. --remote=origin --push
+```text
+config/app-mapping.example.json
 ```
 
-不要提交 `build/` 里的编译产物，也不要提交自己的 `config/app-mapping.json`。仓库里保留 `config/app-mapping.example.json`，让每个用户复制成自己的配置。
+## 录制组合键
+
+在某个动作旁边点击「录制组合键」，然后直接按下你想绑定的快捷键。
+
+例如：
+
+```text
+Command + Shift + P
+Control + Tab
+Command + [
+```
+
+界面会自动填入对应组合键。
+
+## 常见问题
+
+### 点击「启动监听」后没有反应
+
+请检查权限：
+
+```text
+系统设置 -> 隐私与安全性 -> 辅助功能
+系统设置 -> 隐私与安全性 -> 输入监控
+```
+
+开启后重新启动 App。
+
+### 手轮动作仍然改变系统音量或亮度
+
+如果没有成功独占设备，macOS 可能仍会收到原本的媒体键事件。请确认：
+
+- 没有同时打开官方 ANTICATER 配置软件
+- 已给 `手轮控制台` 输入监控权限
+- 重新点击「启动监听」
+
+### 找不到某个 App
+
+点击「刷新发现」，或手动输入该 App 的 bundle id 后点击「添加」。
+
+## 开发者工具
+
+仓库里还保留了一些诊断脚本：
+
+```bash
+./run-hid-probe.sh
+./run-input-probe.sh
+./run-knob-monitor.sh
+./run-knob-mapper.sh
+```
+
+普通用户只需要使用：
+
+```bash
+./run-gui.sh
+```
