@@ -462,7 +462,7 @@ private final class KnobService: ObservableObject {
     @Published private(set) var inputAccessStatus = "输入监控：未检查"
     @Published private(set) var accessibilityStatus = "辅助功能：未检查"
 
-    private let triplePressGap: TimeInterval = 1.5
+    private let triplePressGap: TimeInterval = 0.65
     private var manager: IOHIDManager?
     private weak var store: ConfigStore?
     private var pendingPressActions: [PendingPressAction] = []
