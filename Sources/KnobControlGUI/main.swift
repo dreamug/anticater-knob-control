@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import IOKit.hid
+import AudioToolbox
 
 private let vendorID = 0x05ac
 private let productID = 0x022c
@@ -447,6 +448,9 @@ private final class KnobService: ObservableObject {
     }
 
     func effectiveMappingTitle(frontmostBundleID: String, frontmostName: String) -> String {
+        if isSelfApp(bundleID: frontmostBundleID) {
+            return "全局默认"
+        }
         guard let lockedBundleID else {
             return "全局默认"
         }
@@ -606,7 +610,7 @@ private final class KnobService: ObservableObject {
             for: input,
             activeBundleID: app.bundleID,
             activeAppName: app.name,
-            lockedBundleID: lockedBundleID
+            lockedBundleID: effectiveLockedBundleID(for: app)
         )
         perform(input: input, app: app, resolution: resolution)
     }
@@ -622,7 +626,7 @@ private final class KnobService: ObservableObject {
             for: .press,
             activeBundleID: app.bundleID,
             activeAppName: app.name,
-            lockedBundleID: lockedBundleID
+            lockedBundleID: effectiveLockedBundleID(for: app)
         )
         pendingPressActions.append(PendingPressAction(date: now, app: app, resolution: resolution))
         pressSequenceCount = pendingPressActions.count
@@ -642,6 +646,12 @@ private final class KnobService: ObservableObject {
     private func toggleMappingLock(for app: AppContext) {
         guard app.bundleID != "unknown" else {
             lastEvent = "\(clock()) 三击 / 没有找到当前应用"
+            return
+        }
+        guard !isSelfApp(bundleID: app.bundleID) else {
+            lockedBundleID = nil
+            lockedAppName = nil
+            lastEvent = "\(clock()) 三击 / 控制台使用全局默认"
             return
         }
 
@@ -734,6 +744,14 @@ private final class KnobService: ObservableObject {
             name: app?.localizedName ?? "unknown",
             bundleID: app?.bundleIdentifier ?? "unknown"
         )
+    }
+
+    private func effectiveLockedBundleID(for app: AppContext) -> String? {
+        isSelfApp(bundleID: app.bundleID) ? nil : lockedBundleID
+    }
+
+    private func isSelfApp(bundleID: String) -> Bool {
+        bundleID == Bundle.main.bundleIdentifier
     }
 
     private func updateConnectedDevice(_ name: String) {
@@ -1461,6 +1479,9 @@ private enum ActionExecutor {
     static func needsAccessibility(_ action: ActionConfig) -> Bool {
         switch action.type {
         case "shortcut", "key", "mouse", "scroll":
+            if let keys = action.keys?.map({ $0.lowercased() }), keys.count == 1, SystemAudioController.canHandle(keys[0]) {
+                return false
+            }
             return true
         default:
             return false
@@ -1469,6 +1490,10 @@ private enum ActionExecutor {
 
     private static func sendKeys(_ keys: [String]) -> Bool {
         let normalized = keys.map { $0.lowercased() }
+        if normalized.count == 1, SystemAudioController.canHandle(normalized[0]) {
+            return SystemAudioController.handle(normalized[0])
+        }
+
         if normalized.count == 1, let media = mediaKeyTypes[normalized[0]] {
             sendMediaKey(media)
             return true
@@ -1563,7 +1588,8 @@ private enum ActionExecutor {
         process.arguments = ["-lc", command]
         do {
             try process.run()
-            return true
+            process.waitUntilExit()
+            return process.terminationStatus == 0
         } catch {
             return false
         }
@@ -1581,6 +1607,90 @@ private let mediaKeyTypes: [String: Int] = [
     "volume_up": 0, "volume_down": 1, "mute": 7,
     "play_pause": 16, "next_track": 17, "previous_track": 18
 ]
+
+private enum SystemAudioController {
+    static func canHandle(_ key: String) -> Bool {
+        ["volume_down", "volume_up", "mute"].contains(key)
+    }
+
+    static func handle(_ key: String) -> Bool {
+        switch key {
+        case "volume_down":
+            return adjustVolume(by: -0.06)
+        case "volume_up":
+            return adjustVolume(by: 0.06)
+        case "mute":
+            return toggleMute()
+        default:
+            return false
+        }
+    }
+
+    private static func adjustVolume(by delta: Float32) -> Bool {
+        guard let current = currentVolume() else { return false }
+        return setVolume(min(max(current + delta, 0), 1))
+    }
+
+    private static func currentVolume() -> Float32? {
+        guard let deviceID = defaultOutputDevice() else { return nil }
+        var address = volumeAddress()
+        var volume = Float32(0)
+        var size = UInt32(MemoryLayout<Float32>.size)
+        let status = AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &volume)
+        return status == noErr ? volume : nil
+    }
+
+    private static func setVolume(_ volume: Float32) -> Bool {
+        guard let deviceID = defaultOutputDevice() else { return false }
+        var address = volumeAddress()
+        var newVolume = volume
+        let size = UInt32(MemoryLayout<Float32>.size)
+        return AudioObjectSetPropertyData(deviceID, &address, 0, nil, size, &newVolume) == noErr
+    }
+
+    private static func toggleMute() -> Bool {
+        guard let deviceID = defaultOutputDevice() else { return false }
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyMute,
+            mScope: kAudioDevicePropertyScopeOutput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var muted = UInt32(0)
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        let readStatus = AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &muted)
+        guard readStatus == noErr else { return setVolume(0) }
+
+        var newMuted = muted == 0 ? UInt32(1) : UInt32(0)
+        return AudioObjectSetPropertyData(deviceID, &address, 0, nil, size, &newMuted) == noErr
+    }
+
+    private static func defaultOutputDevice() -> AudioDeviceID? {
+        var deviceID = AudioDeviceID(0)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let status = AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject),
+            &address,
+            0,
+            nil,
+            &size,
+            &deviceID
+        )
+        return status == noErr ? deviceID : nil
+    }
+
+    private static func volumeAddress() -> AudioObjectPropertyAddress {
+        AudioObjectPropertyAddress(
+            mSelector: kAudioHardwareServiceDeviceProperty_VirtualMainVolume,
+            mScope: kAudioDevicePropertyScopeOutput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+    }
+}
 
 private let keyCodesByName: [String: CGKeyCode] = [
     "a": 0, "s": 1, "d": 2, "f": 3, "h": 4, "g": 5, "z": 6, "x": 7,
