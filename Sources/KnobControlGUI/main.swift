@@ -421,12 +421,22 @@ private final class KnobService: ObservableObject {
     @Published var lastEvent = "暂无事件"
     @Published private(set) var lockedBundleID: String?
     @Published private(set) var lockedAppName: String?
+    @Published private(set) var inputCounts: [KnobInput: Int] = [:]
+    @Published private(set) var lastInput: KnobInput?
+    @Published private(set) var pressSequenceCount = 0
+    @Published private(set) var rawEventCount = 0
+    @Published private(set) var decodedEventCount = 0
+    @Published private(set) var ignoredEventCount = 0
+    @Published private(set) var lastRawEvent = "暂无 HID 输入"
+    @Published private(set) var inputAccessStatus = "输入监控：未检查"
 
     private let triplePressGap: TimeInterval = 1.2
     private var manager: IOHIDManager?
     private weak var store: ConfigStore?
     private var pendingPressActions: [PendingPressAction] = []
     private var pendingPressWorkItem: DispatchWorkItem?
+    private var listenMode = "未监听"
+    private var connectedDeviceName: String?
 
     var lockModeTitle: String {
         if let lockedAppName {
@@ -452,6 +462,7 @@ private final class KnobService: ObservableObject {
     func start(store: ConfigStore) {
         guard !isRunning else { return }
 
+        refreshInputAccessStatus()
         self.store = store
         let manager = IOHIDManagerCreate(kCFAllocatorDefault, IOOptionBits(kIOHIDOptionsTypeNone))
         self.manager = manager
@@ -464,7 +475,7 @@ private final class KnobService: ObservableObject {
         IOHIDManagerRegisterDeviceMatchingCallback(manager, { context, _, _, device in
             guard let context else { return }
             let service = Unmanaged<KnobService>.fromOpaque(context).takeUnretainedValue()
-            Task { @MainActor in service.deviceStatus = "已连接：\(deviceName(device))" }
+            Task { @MainActor in service.updateConnectedDevice(deviceName(device)) }
         }, Unmanaged.passUnretained(self).toOpaque())
 
         IOHIDManagerRegisterDeviceRemovalCallback(manager, { context, _, _, _ in
@@ -480,8 +491,13 @@ private final class KnobService: ObservableObject {
             let page = IOHIDElementGetUsagePage(element)
             let usage = IOHIDElementGetUsage(element)
             let intValue = IOHIDValueGetIntegerValue(value)
+            let input = knobInput(page: page, usage: usage)
 
-            guard intValue == 1, let input = knobInput(page: page, usage: usage) else {
+            Task { @MainActor in
+                service.recordHIDEvent(page: page, usage: usage, intValue: intValue, input: input)
+            }
+
+            guard intValue == 1, let input else {
                 return
             }
 
@@ -490,24 +506,28 @@ private final class KnobService: ObservableObject {
 
         IOHIDManagerScheduleWithRunLoop(manager, CFRunLoopGetMain(), CFRunLoopMode.defaultMode.rawValue)
 
-        let seized = IOHIDManagerOpen(manager, IOOptionBits(kIOHIDOptionsTypeSeizeDevice))
-        if seized != kIOReturnSuccess {
-            let normal = IOHIDManagerOpen(manager, IOOptionBits(kIOHIDOptionsTypeNone))
-            guard normal == kIOReturnSuccess else {
-                deviceStatus = "启动失败：0x\(hex(UInt32(bitPattern: normal), width: 8))"
+        let seizedResult = IOHIDManagerOpen(manager, IOOptionBits(kIOHIDOptionsTypeSeizeDevice))
+        if seizedResult == kIOReturnSuccess {
+            listenMode = "独占监听"
+            deviceStatus = "已启动独占监听"
+        } else {
+            let openResult = IOHIDManagerOpen(manager, IOOptionBits(kIOHIDOptionsTypeNone))
+            guard openResult == kIOReturnSuccess else {
+                deviceStatus = "启动失败：独占 0x\(hex(UInt32(bitPattern: seizedResult), width: 8)) / 普通 0x\(hex(UInt32(bitPattern: openResult), width: 8))"
+                lastEvent = "请在系统设置里重新添加「手轮控制台」到输入监控"
                 self.manager = nil
                 return
             }
-            deviceStatus = "已启动，但未独占设备"
-        } else {
-            deviceStatus = "已启动并独占设备"
+            listenMode = "普通监听"
+            deviceStatus = "已启动普通监听，系统音量可能仍会响应"
         }
 
         if let devices = IOHIDManagerCopyDevices(manager) as? Set<IOHIDDevice>, let first = devices.first {
-            deviceStatus = "已连接：\(deviceName(first))"
+            updateConnectedDevice(deviceName(first))
         }
 
         isRunning = true
+        lastEvent = "\(clock()) 已启动监听"
     }
 
     func stop() {
@@ -517,7 +537,9 @@ private final class KnobService: ObservableObject {
         IOHIDManagerClose(manager, IOOptionBits(kIOHIDOptionsTypeNone))
         self.manager = nil
         isRunning = false
+        listenMode = "未监听"
         deviceStatus = "已停止"
+        lastEvent = "\(clock()) 已停止监听"
     }
 
     func clearMappingLock() {
@@ -526,16 +548,44 @@ private final class KnobService: ObservableObject {
         lastEvent = "\(clock()) 已恢复全局默认"
     }
 
+    func inputCount(for input: KnobInput) -> Int {
+        inputCounts[input, default: 0]
+    }
+
+    func resetInputCounters() {
+        inputCounts = [:]
+        lastInput = nil
+        pressSequenceCount = 0
+        rawEventCount = 0
+        decodedEventCount = 0
+        ignoredEventCount = 0
+        lastRawEvent = "暂无 HID 输入"
+        lastEvent = "\(clock()) 已清空输入计数"
+    }
+
+    func requestInputMonitoringAccess() {
+        let granted = IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)
+        refreshInputAccessStatus()
+        lastEvent = granted ? "\(clock()) 输入监控权限已允许" : "\(clock()) 已请求输入监控权限，请在系统设置确认"
+    }
+
+    func openInputMonitoringSettings() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent") {
+            NSWorkspace.shared.open(url)
+            lastEvent = "\(clock()) 已打开输入监控设置"
+        }
+    }
+
     private func handle(_ input: KnobInput) {
         guard let store else { return }
         let app = currentAppContext()
+        recordInput(input)
 
         if input == .press {
             handlePress(app: app, store: store)
             return
         }
 
-        flushPendingPressActions()
         let resolution = store.action(
             for: input,
             activeBundleID: app.bundleID,
@@ -559,10 +609,12 @@ private final class KnobService: ObservableObject {
             lockedBundleID: lockedBundleID
         )
         pendingPressActions.append(PendingPressAction(date: now, app: app, resolution: resolution))
+        pressSequenceCount = pendingPressActions.count
 
         if pendingPressActions.count >= 3 {
             cancelPendingPressWorkItem()
             pendingPressActions.removeAll()
+            pressSequenceCount = 0
             toggleMappingLock(for: app)
             return
         }
@@ -608,9 +660,38 @@ private final class KnobService: ObservableObject {
         cancelPendingPressWorkItem()
         let actions = pendingPressActions
         pendingPressActions.removeAll()
+        pressSequenceCount = 0
 
         for pending in actions {
             perform(input: .press, app: pending.app, resolution: pending.resolution)
+        }
+    }
+
+    private func recordInput(_ input: KnobInput) {
+        inputCounts[input, default: 0] += 1
+        lastInput = input
+    }
+
+    private func recordHIDEvent(page: UInt32, usage: UInt32, intValue: Int, input: KnobInput?) {
+        rawEventCount += 1
+        if intValue == 1, input != nil {
+            decodedEventCount += 1
+        } else {
+            ignoredEventCount += 1
+        }
+
+        let decoded = input.map { " -> \($0.title)" } ?? ""
+        lastRawEvent = "page=0x\(hex(page, width: 4)) usage=0x\(hex(usage, width: 4)) int=\(intValue)\(decoded)"
+    }
+
+    private func refreshInputAccessStatus() {
+        let access = IOHIDCheckAccess(kIOHIDRequestTypeListenEvent)
+        if access == kIOHIDAccessTypeGranted {
+            inputAccessStatus = "输入监控：已允许"
+        } else if access == kIOHIDAccessTypeDenied {
+            inputAccessStatus = "输入监控：未允许"
+        } else {
+            inputAccessStatus = "输入监控：未决定"
         }
     }
 
@@ -631,6 +712,11 @@ private final class KnobService: ObservableObject {
             name: app?.localizedName ?? "unknown",
             bundleID: app?.bundleIdentifier ?? "unknown"
         )
+    }
+
+    private func updateConnectedDevice(_ name: String) {
+        connectedDeviceName = name
+        deviceStatus = "\(listenMode)：\(name)"
     }
 }
 
@@ -665,6 +751,7 @@ private struct KnobControlApp: App {
             }
             Divider()
             Text(knobService.deviceStatus)
+            Text(knobService.inputAccessStatus)
             Text("映射模式：\(knobService.lockModeTitle)")
             Text(knobService.lastEvent)
             Divider()
@@ -794,6 +881,14 @@ private struct ContentView: View {
                     frontmostBundleID: frontmost.bundleID,
                     frontmostName: frontmost.name
                 ),
+                inputAccessStatus: knobService.inputAccessStatus,
+                inputCounts: knobService.inputCounts,
+                lastInput: knobService.lastInput,
+                pressSequenceCount: knobService.pressSequenceCount,
+                rawEventCount: knobService.rawEventCount,
+                decodedEventCount: knobService.decodedEventCount,
+                ignoredEventCount: knobService.ignoredEventCount,
+                lastRawEvent: knobService.lastRawEvent,
                 lastEvent: knobService.lastEvent
             )
 
@@ -827,6 +922,18 @@ private struct ContentView: View {
                 knobService.clearMappingLock()
             }
             .disabled(knobService.lockedBundleID == nil)
+
+            Button("清空计数") {
+                knobService.resetInputCounters()
+            }
+
+            Button("请求权限") {
+                knobService.requestInputMonitoringAccess()
+            }
+
+            Button("打开输入监控") {
+                knobService.openInputMonitoringSettings()
+            }
         }
     }
 
@@ -1157,35 +1264,112 @@ private struct StatusDashboard: View {
     let frontmostName: String
     let lockMode: String
     let effectiveMapping: String
+    let inputAccessStatus: String
+    let inputCounts: [KnobInput: Int]
+    let lastInput: KnobInput?
+    let pressSequenceCount: Int
+    let rawEventCount: Int
+    let decodedEventCount: Int
+    let ignoredEventCount: Int
+    let lastRawEvent: String
     let lastEvent: String
 
     var body: some View {
-        HStack(spacing: 10) {
-            DashboardTile(
-                title: "设备状态",
-                value: running ? "监听中" : "未监听",
-                detail: deviceStatus,
-                color: running ? .green : .gray
-            )
-            DashboardTile(
-                title: "当前应用",
-                value: frontmostName,
-                detail: "正在使用：\(effectiveMapping)",
-                color: .blue
-            )
-            DashboardTile(
-                title: "三击锁定",
-                value: lockMode,
-                detail: "快速按下三次切换当前应用",
-                color: .purple
-            )
-            DashboardTile(
-                title: "最近动作",
-                value: lastEvent == "暂无事件" ? "等待手轮输入" : lastEvent,
-                detail: "实时执行反馈",
-                color: .orange
+        VStack(spacing: 10) {
+            HStack(spacing: 10) {
+                DashboardTile(
+                    title: "设备状态",
+                    value: running ? "监听中" : "未监听",
+                    detail: "\(deviceStatus) · \(inputAccessStatus)",
+                    color: running ? .green : .gray
+                )
+                DashboardTile(
+                    title: "当前应用",
+                    value: frontmostName,
+                    detail: "正在使用：\(effectiveMapping)",
+                    color: .blue
+                )
+                DashboardTile(
+                    title: "三击锁定",
+                    value: lockMode,
+                    detail: pressSequenceCount > 0 ? "按下计数：\(pressSequenceCount)/3" : "快速按下三次切换当前应用",
+                    color: .purple
+                )
+                DashboardTile(
+                    title: "最近动作",
+                    value: lastEvent == "暂无事件" ? "等待手轮输入" : lastEvent,
+                    detail: "实时执行反馈",
+                    color: .orange
+                )
+            }
+
+            InputMonitorStrip(
+                inputCounts: inputCounts,
+                lastInput: lastInput,
+                rawEventCount: rawEventCount,
+                decodedEventCount: decodedEventCount,
+                ignoredEventCount: ignoredEventCount,
+                lastRawEvent: lastRawEvent
             )
         }
+    }
+}
+
+private struct InputMonitorStrip: View {
+    let inputCounts: [KnobInput: Int]
+    let lastInput: KnobInput?
+    let rawEventCount: Int
+    let decodedEventCount: Int
+    let ignoredEventCount: Int
+    let lastRawEvent: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Text("输入监视")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Text("原始 \(rawEventCount)")
+                Text("识别 \(decodedEventCount)")
+                Text("忽略 \(ignoredEventCount)")
+                Text(lastRawEvent)
+                    .lineLimit(1)
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+            }
+            .font(.caption)
+
+            HStack(spacing: 8) {
+                ForEach(KnobInput.allCases) { input in
+                    InputCounterPill(
+                        input: input,
+                        count: inputCounts[input, default: 0],
+                        active: lastInput == input
+                    )
+                }
+            }
+        }
+        .padding(10)
+        .background(.quaternary.opacity(0.55), in: RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+private struct InputCounterPill: View {
+    let input: KnobInput
+    let count: Int
+    let active: Bool
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Text(gestureSymbol(input))
+            Text(input.title)
+            Text("\(count)")
+                .fontWeight(.semibold)
+        }
+        .font(.caption)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(active ? Color.accentColor.opacity(0.28) : Color.gray.opacity(0.14), in: Capsule())
     }
 }
 
