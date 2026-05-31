@@ -38,6 +38,21 @@ cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
-codesign --force --deep --sign - "$APP_DIR" >/dev/null
+SIGN_IDENTITY="${ANTICATER_CODE_SIGN_IDENTITY:-}"
+if [[ -z "$SIGN_IDENTITY" ]]; then
+  SIGN_IDENTITY="$(
+    security find-identity -v -p codesigning 2>/dev/null \
+      | sed -n 's/.*"\(Apple Development:[^"]*\)".*/\1/p' \
+      | head -n 1
+  )"
+fi
+
+if [[ -n "$SIGN_IDENTITY" ]]; then
+  echo "signing with: $SIGN_IDENTITY" >&2
+  codesign --force --deep --sign "$SIGN_IDENTITY" "$APP_DIR" >/dev/null
+else
+  echo "signing with: ad-hoc" >&2
+  codesign --force --deep --sign - "$APP_DIR" >/dev/null
+fi
 
 echo "$APP_DIR"

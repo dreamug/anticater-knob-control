@@ -56,6 +56,26 @@ cd anticater-knob-control
 open build/ANTICATERKnobControl.app
 ```
 
+构建后的 App 在：
+
+```text
+build/ANTICATERKnobControl.app
+```
+
+真正的可执行文件在：
+
+```text
+build/ANTICATERKnobControl.app/Contents/MacOS/ANTICATERKnobControl
+```
+
+授权输入监控时，请优先选择整个 `build/ANTICATERKnobControl.app`。
+
+构建脚本会优先使用本机的 `Apple Development` 证书签名；如果没有可用证书，会退回 ad-hoc 签名。也可以手动指定签名身份：
+
+```bash
+ANTICATER_CODE_SIGN_IDENTITY="Apple Development: your@email.com (TEAMID)" ./build-gui.sh
+```
+
 ## 第一次使用
 
 1. 打开 `手轮控制台`
