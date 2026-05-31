@@ -111,6 +111,22 @@ private enum ProfileID: Hashable {
     case app(String)
 }
 
+private struct AppContext {
+    let name: String
+    let bundleID: String
+}
+
+private struct ActionResolution {
+    let action: ActionConfig?
+    let source: String
+}
+
+private struct PendingPressAction {
+    let date: Date
+    let app: AppContext
+    let resolution: ActionResolution
+}
+
 @MainActor
 private final class AppCatalog: ObservableObject {
     @Published var apps: [AppInfo] = []
@@ -365,8 +381,15 @@ private final class ConfigStore: ObservableObject {
         }
     }
 
-    func action(for input: KnobInput, bundleID: String) -> ActionConfig? {
-        config.apps[bundleID]?[input.rawValue] ?? config.global[input.rawValue]
+    func action(for input: KnobInput, activeBundleID: String, activeAppName: String, lockedBundleID: String?) -> ActionResolution {
+        if let lockedBundleID, lockedBundleID == activeBundleID {
+            if let action = config.apps[activeBundleID]?[input.rawValue] {
+                return ActionResolution(action: action, source: "\(activeAppName) 映射")
+            }
+            return ActionResolution(action: config.global[input.rawValue], source: "全局默认")
+        }
+
+        return ActionResolution(action: config.global[input.rawValue], source: "全局默认")
     }
 }
 
@@ -396,9 +419,31 @@ private final class KnobService: ObservableObject {
     @Published var isRunning = false
     @Published var deviceStatus = "未启动"
     @Published var lastEvent = "暂无事件"
+    @Published private(set) var lockedBundleID: String?
+    @Published private(set) var lockedAppName: String?
 
+    private let triplePressGap: TimeInterval = 1.2
     private var manager: IOHIDManager?
     private weak var store: ConfigStore?
+    private var pendingPressActions: [PendingPressAction] = []
+    private var pendingPressWorkItem: DispatchWorkItem?
+
+    var lockModeTitle: String {
+        if let lockedAppName {
+            return "已锁定 \(lockedAppName)"
+        }
+        return "全局默认"
+    }
+
+    func effectiveMappingTitle(frontmostBundleID: String, frontmostName: String) -> String {
+        guard let lockedBundleID else {
+            return "全局默认"
+        }
+        if lockedBundleID == frontmostBundleID {
+            return "\(frontmostName) 映射"
+        }
+        return "全局默认"
+    }
 
     func toggle(store: ConfigStore) {
         isRunning ? stop() : start(store: store)
@@ -467,6 +512,7 @@ private final class KnobService: ObservableObject {
 
     func stop() {
         guard let manager else { return }
+        flushPendingPressActions()
         IOHIDManagerUnscheduleFromRunLoop(manager, CFRunLoopGetMain(), CFRunLoopMode.defaultMode.rawValue)
         IOHIDManagerClose(manager, IOOptionBits(kIOHIDOptionsTypeNone))
         self.manager = nil
@@ -474,20 +520,117 @@ private final class KnobService: ObservableObject {
         deviceStatus = "已停止"
     }
 
+    func clearMappingLock() {
+        lockedBundleID = nil
+        lockedAppName = nil
+        lastEvent = "\(clock()) 已恢复全局默认"
+    }
+
     private func handle(_ input: KnobInput) {
         guard let store else { return }
-        let app = NSWorkspace.shared.frontmostApplication
-        let appName = app?.localizedName ?? "unknown"
-        let bundleID = app?.bundleIdentifier ?? "unknown"
+        let app = currentAppContext()
 
-        guard let action = store.action(for: input, bundleID: bundleID) else {
-            lastEvent = "\(clock()) \(input.rawValue) / \(appName) / 无动作"
+        if input == .press {
+            handlePress(app: app, store: store)
+            return
+        }
+
+        flushPendingPressActions()
+        let resolution = store.action(
+            for: input,
+            activeBundleID: app.bundleID,
+            activeAppName: app.name,
+            lockedBundleID: lockedBundleID
+        )
+        perform(input: input, app: app, resolution: resolution)
+    }
+
+    private func handlePress(app: AppContext, store: ConfigStore) {
+        let now = Date()
+        if let last = pendingPressActions.last,
+           last.app.bundleID != app.bundleID || now.timeIntervalSince(last.date) > triplePressGap {
+            flushPendingPressActions()
+        }
+
+        let resolution = store.action(
+            for: .press,
+            activeBundleID: app.bundleID,
+            activeAppName: app.name,
+            lockedBundleID: lockedBundleID
+        )
+        pendingPressActions.append(PendingPressAction(date: now, app: app, resolution: resolution))
+
+        if pendingPressActions.count >= 3 {
+            cancelPendingPressWorkItem()
+            pendingPressActions.removeAll()
+            toggleMappingLock(for: app)
+            return
+        }
+
+        lastEvent = "\(clock()) press / \(app.name) / 等待三击确认（\(pendingPressActions.count)/3）"
+        schedulePendingPressFlush()
+    }
+
+    private func toggleMappingLock(for app: AppContext) {
+        guard app.bundleID != "unknown" else {
+            lastEvent = "\(clock()) 三击 / 没有找到当前应用"
+            return
+        }
+
+        if lockedBundleID == app.bundleID {
+            lockedBundleID = nil
+            lockedAppName = nil
+            lastEvent = "\(clock()) 三击 / 已恢复全局默认"
+        } else {
+            lockedBundleID = app.bundleID
+            lockedAppName = app.name
+            lastEvent = "\(clock()) 三击 / 已锁定 \(app.name)"
+        }
+    }
+
+    private func schedulePendingPressFlush() {
+        cancelPendingPressWorkItem()
+        let workItem = DispatchWorkItem { [weak self] in
+            Task { @MainActor in
+                self?.flushPendingPressActions()
+            }
+        }
+        pendingPressWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + triplePressGap, execute: workItem)
+    }
+
+    private func cancelPendingPressWorkItem() {
+        pendingPressWorkItem?.cancel()
+        pendingPressWorkItem = nil
+    }
+
+    private func flushPendingPressActions() {
+        cancelPendingPressWorkItem()
+        let actions = pendingPressActions
+        pendingPressActions.removeAll()
+
+        for pending in actions {
+            perform(input: .press, app: pending.app, resolution: pending.resolution)
+        }
+    }
+
+    private func perform(input: KnobInput, app: AppContext, resolution: ActionResolution) {
+        guard let action = resolution.action else {
+            lastEvent = "\(clock()) \(input.rawValue) / \(app.name) / \(resolution.source) / 无动作"
             return
         }
 
         let ok = ActionExecutor.run(action)
         let detail = action.description?.isEmpty == false ? action.description! : action.type
-        lastEvent = "\(clock()) \(input.rawValue) / \(appName) / \(detail) / \(ok ? "ok" : "failed")"
+        lastEvent = "\(clock()) \(input.rawValue) / \(app.name) / \(resolution.source) / \(detail) / \(ok ? "ok" : "failed")"
+    }
+
+    private func currentAppContext() -> AppContext {
+        let app = NSWorkspace.shared.frontmostApplication
+        return AppContext(
+            name: app?.localizedName ?? "unknown",
+            bundleID: app?.bundleIdentifier ?? "unknown"
+        )
     }
 }
 
@@ -522,6 +665,7 @@ private struct KnobControlApp: App {
             }
             Divider()
             Text(knobService.deviceStatus)
+            Text("映射模式：\(knobService.lockModeTitle)")
             Text(knobService.lastEvent)
             Divider()
             Button("退出") {
@@ -645,6 +789,11 @@ private struct ContentView: View {
                 running: knobService.isRunning,
                 deviceStatus: knobService.deviceStatus,
                 frontmostName: frontmost.name,
+                lockMode: knobService.lockModeTitle,
+                effectiveMapping: knobService.effectiveMappingTitle(
+                    frontmostBundleID: frontmost.bundleID,
+                    frontmostName: frontmost.name
+                ),
                 lastEvent: knobService.lastEvent
             )
 
@@ -673,6 +822,11 @@ private struct ContentView: View {
             Button("为当前应用创建并套用") {
                 store.addCurrentApp(template: selectedTemplate)
             }
+
+            Button("解除三击锁定") {
+                knobService.clearMappingLock()
+            }
+            .disabled(knobService.lockedBundleID == nil)
         }
     }
 
@@ -1001,6 +1155,8 @@ private struct StatusDashboard: View {
     let running: Bool
     let deviceStatus: String
     let frontmostName: String
+    let lockMode: String
+    let effectiveMapping: String
     let lastEvent: String
 
     var body: some View {
@@ -1014,8 +1170,14 @@ private struct StatusDashboard: View {
             DashboardTile(
                 title: "当前应用",
                 value: frontmostName,
-                detail: "动作会按这个应用匹配",
+                detail: "正在使用：\(effectiveMapping)",
                 color: .blue
+            )
+            DashboardTile(
+                title: "三击锁定",
+                value: lockMode,
+                detail: "快速按下三次切换当前应用",
+                color: .purple
             )
             DashboardTile(
                 title: "最近动作",
