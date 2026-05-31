@@ -1387,7 +1387,8 @@ private struct ShortcutRecorderSheet: View {
             if flags.contains(.control) { keys.append("control") }
             if flags.contains(.option) { keys.append("option") }
             if flags.contains(.shift) { keys.append("shift") }
-            if flags.contains(.function) { keys.append("fn") }
+            // macOS often sets .function for hardware/layout reasons even when Fn was not intentionally held.
+            // Keep Fn available for manual input, but do not add it during shortcut recording.
             keys.append(key)
             preview = displayKeyList(keys)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
