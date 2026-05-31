@@ -255,21 +255,31 @@ private final class ConfigStore: ObservableObject {
 
     let projectRoot: URL
     let configURL: URL
+    private let legacyConfigURL: URL
 
     init() {
         projectRoot = findProjectRoot()
-        configURL = projectRoot.appendingPathComponent("config/app-mapping.json")
+        configURL = userConfigURL()
+        legacyConfigURL = projectRoot.appendingPathComponent("config/app-mapping.json")
 
         do {
-            let url = FileManager.default.fileExists(atPath: configURL.path)
-                ? configURL
-                : projectRoot.appendingPathComponent("config/app-mapping.example.json")
+            let url = Self.initialConfigURL(
+                configURL: configURL,
+                legacyConfigURL: legacyConfigURL,
+                projectRoot: projectRoot
+            )
             let data = try Data(contentsOf: url)
             config = try JSONDecoder().decode(MappingConfig.self, from: data)
-            status = "已加载 \(url.lastPathComponent)"
+            if url != configURL {
+                save(silent: true)
+                status = "已迁移配置到 \(configURL.path)"
+            } else {
+                status = "已加载本地配置：\(configURL.path)"
+            }
         } catch {
             config = MappingConfig(global: defaultActions(), apps: [:])
-            status = "配置加载失败，已使用空配置"
+            save(silent: true)
+            status = "配置加载失败，已创建本地配置：\(configURL.path)"
         }
     }
 
@@ -305,6 +315,7 @@ private final class ConfigStore: ObservableObject {
                     appActions[input.rawValue] = newValue
                     self.config.apps[bundleID] = appActions
                 }
+                self.save(silent: true)
             }
         )
     }
@@ -322,6 +333,7 @@ private final class ConfigStore: ObservableObject {
         }
         selectedProfile = .app(trimmed)
         status = "已添加 \(trimmed)"
+        save(silent: true)
     }
 
     func addCurrentApp(template: ActionTemplate? = nil) {
@@ -347,6 +359,7 @@ private final class ConfigStore: ObservableObject {
             config.apps[bundleID] = actions
             status = "已应用「\(template.title)」模板"
         }
+        save(silent: true)
     }
 
     func deleteSelectedApp() {
@@ -354,19 +367,20 @@ private final class ConfigStore: ObservableObject {
         config.apps.removeValue(forKey: bundleID)
         selectedProfile = .global
         status = "已删除 \(bundleID)"
+        save(silent: true)
     }
 
     func reload() {
         do {
             let data = try Data(contentsOf: configURL)
             config = try JSONDecoder().decode(MappingConfig.self, from: data)
-            status = "已重新加载配置"
+            status = "已重新加载本地配置：\(configURL.path)"
         } catch {
             status = "重新加载失败：\(error.localizedDescription)"
         }
     }
 
-    func save() {
+    func save(silent: Bool = false) {
         do {
             try FileManager.default.createDirectory(
                 at: configURL.deletingLastPathComponent(),
@@ -376,10 +390,26 @@ private final class ConfigStore: ObservableObject {
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
             let data = try encoder.encode(config)
             try data.write(to: configURL)
-            status = "已保存 \(configURL.lastPathComponent)"
+            if !silent {
+                status = "已保存本地配置：\(configURL.path)"
+            }
         } catch {
-            status = "保存失败：\(error.localizedDescription)"
+            if !silent {
+                status = "保存失败：\(error.localizedDescription)"
+            }
         }
+    }
+
+    private static func initialConfigURL(configURL: URL, legacyConfigURL: URL, projectRoot: URL) -> URL {
+        let exampleURL = projectRoot.appendingPathComponent("config/app-mapping.example.json")
+        let fm = FileManager.default
+        if fm.fileExists(atPath: configURL.path) {
+            return configURL
+        }
+        if fm.fileExists(atPath: legacyConfigURL.path) {
+            return legacyConfigURL
+        }
+        return exampleURL
     }
 
     func action(for input: KnobInput, activeBundleID: String, activeAppName: String, lockedBundleID: String?) -> ActionResolution {
@@ -1124,6 +1154,7 @@ private struct ContentView: View {
             Text("配置：\(store.configURL.lastPathComponent)")
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
+                .help(store.configURL.path)
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 10)
@@ -2481,6 +2512,15 @@ private func clock() -> String {
 
 private func hex<T: FixedWidthInteger>(_ value: T, width: Int) -> String {
     String(format: "%0\(width)x", UInt64(value))
+}
+
+private func userConfigURL() -> URL {
+    let fm = FileManager.default
+    let base = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+        ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
+    return base
+        .appendingPathComponent("ANTICATER Knob Control", isDirectory: true)
+        .appendingPathComponent("app-mapping.json")
 }
 
 private func findProjectRoot() -> URL {
