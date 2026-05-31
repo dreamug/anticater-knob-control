@@ -1,0 +1,18 @@
+.DS_Store
+
+# Local user config. Keep the example config in git.
+config/app-mapping.json
+
+# Build outputs
+build/
+.build/
+DerivedData/
+
+# Xcode / Swift local state
+*.xcuserdata/
+*.xcuserstate
+
+# Logs and temporary files
+*.log
+*.tmp
+

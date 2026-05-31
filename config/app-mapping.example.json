@@ -1,0 +1,220 @@
+{
+  "global": {
+    "rotate_left": {
+      "type": "key",
+      "description": "降低音量",
+      "keys": ["volume_down"]
+    },
+    "rotate_right": {
+      "type": "key",
+      "description": "提高音量",
+      "keys": ["volume_up"]
+    },
+    "press": {
+      "type": "key",
+      "description": "播放 / 暂停",
+      "keys": ["play_pause"]
+    },
+    "press_rotate_left": {
+      "type": "shortcut",
+      "description": "上一个媒体项目",
+      "keys": ["previous_track"]
+    },
+    "press_rotate_right": {
+      "type": "shortcut",
+      "description": "下一个媒体项目",
+      "keys": ["next_track"]
+    }
+  },
+  "apps": {
+    "com.apple.Terminal": {
+      "rotate_left": {
+        "type": "shortcut",
+        "description": "上一条命令历史",
+        "keys": ["up"]
+      },
+      "rotate_right": {
+        "type": "shortcut",
+        "description": "下一条命令历史",
+        "keys": ["down"]
+      },
+      "press": {
+        "type": "shortcut",
+        "description": "回车",
+        "keys": ["return"]
+      },
+      "press_rotate_left": {
+        "type": "shortcut",
+        "description": "移动到行首",
+        "keys": ["control", "a"]
+      },
+      "press_rotate_right": {
+        "type": "shortcut",
+        "description": "移动到行尾",
+        "keys": ["control", "e"]
+      }
+    },
+    "com.google.Chrome": {
+      "rotate_left": {
+        "type": "shortcut",
+        "description": "上一个标签页",
+        "keys": ["control", "shift", "tab"]
+      },
+      "rotate_right": {
+        "type": "shortcut",
+        "description": "下一个标签页",
+        "keys": ["control", "tab"]
+      },
+      "press": {
+        "type": "shortcut",
+        "description": "刷新页面",
+        "keys": ["command", "r"]
+      },
+      "press_rotate_left": {
+        "type": "shortcut",
+        "description": "历史后退",
+        "keys": ["command", "["]
+      },
+      "press_rotate_right": {
+        "type": "shortcut",
+        "description": "历史前进",
+        "keys": ["command", "]"]
+      }
+    },
+    "company.thebrowser.Browser": {
+      "rotate_left": {
+        "type": "shortcut",
+        "description": "上一个标签页",
+        "keys": ["control", "shift", "tab"]
+      },
+      "rotate_right": {
+        "type": "shortcut",
+        "description": "下一个标签页",
+        "keys": ["control", "tab"]
+      },
+      "press": {
+        "type": "shortcut",
+        "description": "刷新页面",
+        "keys": ["command", "r"]
+      },
+      "press_rotate_left": {
+        "type": "shortcut",
+        "description": "历史后退",
+        "keys": ["command", "["]
+      },
+      "press_rotate_right": {
+        "type": "shortcut",
+        "description": "历史前进",
+        "keys": ["command", "]"]
+      }
+    },
+    "com.microsoft.VSCode": {
+      "rotate_left": {
+        "type": "shortcut",
+        "description": "上一个编辑器",
+        "keys": ["command", "shift", "["]
+      },
+      "rotate_right": {
+        "type": "shortcut",
+        "description": "下一个编辑器",
+        "keys": ["command", "shift", "]"]
+      },
+      "press": {
+        "type": "shortcut",
+        "description": "打开命令面板",
+        "keys": ["command", "shift", "p"]
+      },
+      "press_rotate_left": {
+        "type": "shortcut",
+        "description": "上一个问题",
+        "keys": ["f8"]
+      },
+      "press_rotate_right": {
+        "type": "shortcut",
+        "description": "下一个问题",
+        "keys": ["shift", "f8"]
+      }
+    },
+    "com.todesktop.230313mzl4w4u92": {
+      "rotate_left": {
+        "type": "shortcut",
+        "description": "上一个编辑器",
+        "keys": ["command", "shift", "["]
+      },
+      "rotate_right": {
+        "type": "shortcut",
+        "description": "下一个编辑器",
+        "keys": ["command", "shift", "]"]
+      },
+      "press": {
+        "type": "shortcut",
+        "description": "打开命令面板",
+        "keys": ["command", "shift", "p"]
+      },
+      "press_rotate_left": {
+        "type": "shortcut",
+        "description": "上一个问题",
+        "keys": ["f8"]
+      },
+      "press_rotate_right": {
+        "type": "shortcut",
+        "description": "下一个问题",
+        "keys": ["shift", "f8"]
+      }
+    },
+    "com.adobe.Photoshop": {
+      "rotate_left": {
+        "type": "shortcut",
+        "description": "缩小笔刷",
+        "keys": ["["]
+      },
+      "rotate_right": {
+        "type": "shortcut",
+        "description": "放大笔刷",
+        "keys": ["]"]
+      },
+      "press": {
+        "type": "shortcut",
+        "description": "切换画笔工具",
+        "keys": ["b"]
+      },
+      "press_rotate_left": {
+        "type": "shortcut",
+        "description": "降低画笔硬度",
+        "keys": ["shift", "["]
+      },
+      "press_rotate_right": {
+        "type": "shortcut",
+        "description": "提高画笔硬度",
+        "keys": ["shift", "]"]
+      }
+    },
+    "com.blackmagic-design.DaVinciResolve": {
+      "rotate_left": {
+        "type": "shortcut",
+        "description": "时间线向前一步",
+        "keys": ["left"]
+      },
+      "rotate_right": {
+        "type": "shortcut",
+        "description": "时间线向后一步",
+        "keys": ["right"]
+      },
+      "press": {
+        "type": "shortcut",
+        "description": "播放 / 暂停",
+        "keys": ["space"]
+      },
+      "press_rotate_left": {
+        "type": "shortcut",
+        "description": "时间线向前大步移动",
+        "keys": ["shift", "left"]
+      },
+      "press_rotate_right": {
+        "type": "shortcut",
+        "description": "时间线向后大步移动",
+        "keys": ["shift", "right"]
+      }
+    }
+  }
+}
