@@ -47,6 +47,36 @@ private enum ActionType: String, CaseIterable, Identifiable, Codable {
     }
 }
 
+private enum ActionTemplate: String, CaseIterable, Identifiable {
+    case browser
+    case coding
+    case media
+    case design
+    case editing
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .browser: return "浏览器"
+        case .coding: return "代码编辑"
+        case .media: return "媒体控制"
+        case .design: return "设计绘图"
+        case .editing: return "剪辑时间线"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .browser: return "标签页、刷新、前进后退"
+        case .coding: return "编辑器切换、命令面板、问题跳转"
+        case .media: return "音量、播放暂停、上一首下一首"
+        case .design: return "画笔大小、硬度、画笔工具"
+        case .editing: return "逐帧移动、播放暂停、大步移动"
+        }
+    }
+}
+
 private struct MappingConfig: Codable {
     var global: [String: ActionConfig]
     var apps: [String: [String: ActionConfig]]
@@ -262,16 +292,6 @@ private final class ConfigStore: ObservableObject {
         )
     }
 
-    func addCurrentApp() {
-        guard let app = NSWorkspace.shared.frontmostApplication,
-              let bundleID = app.bundleIdentifier else {
-            status = "没有找到当前 App"
-            return
-        }
-
-        addApp(bundleID: bundleID)
-    }
-
     func addApp(_ app: AppInfo) {
         addApp(bundleID: app.bundleID)
     }
@@ -285,6 +305,31 @@ private final class ConfigStore: ObservableObject {
         }
         selectedProfile = .app(trimmed)
         status = "已添加 \(trimmed)"
+    }
+
+    func addCurrentApp(template: ActionTemplate? = nil) {
+        guard let app = NSWorkspace.shared.frontmostApplication,
+              let bundleID = app.bundleIdentifier else {
+            status = "没有找到当前应用"
+            return
+        }
+
+        addApp(bundleID: bundleID)
+        if let template {
+            applyTemplate(template)
+        }
+    }
+
+    func applyTemplate(_ template: ActionTemplate) {
+        let actions = templateActions(template)
+        switch selectedProfile {
+        case .global:
+            config.global = actions
+            status = "已应用「\(template.title)」模板到全局默认"
+        case .app(let bundleID):
+            config.apps[bundleID] = actions
+            status = "已应用「\(template.title)」模板"
+        }
     }
 
     func deleteSelectedApp() {
@@ -467,6 +512,23 @@ private struct KnobControlApp: App {
                 }
         }
         .windowStyle(.titleBar)
+
+        MenuBarExtra("手轮控制台", systemImage: "slider.horizontal.3") {
+            Button("显示控制台") {
+                NSApp.activate(ignoringOtherApps: true)
+            }
+            Button(knobService.isRunning ? "停止监听" : "启动监听") {
+                knobService.toggle(store: store)
+            }
+            Divider()
+            Text(knobService.deviceStatus)
+            Text(knobService.lastEvent)
+            Divider()
+            Button("退出") {
+                knobService.stop()
+                NSApp.terminate(nil)
+            }
+        }
     }
 }
 
@@ -476,6 +538,7 @@ private struct ContentView: View {
     @EnvironmentObject private var knobService: KnobService
     @EnvironmentObject private var appCatalog: AppCatalog
     @State private var newBundleID = ""
+    @State private var selectedTemplate: ActionTemplate = .browser
 
     var body: some View {
         NavigationSplitView {
@@ -578,15 +641,39 @@ private struct ContentView: View {
                 .keyboardShortcut("s", modifiers: [.command])
             }
 
-            HStack {
-                StatusPill(text: knobService.deviceStatus, active: knobService.isRunning)
-                Text(knobService.lastEvent)
-                    .lineLimit(1)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            StatusDashboard(
+                running: knobService.isRunning,
+                deviceStatus: knobService.deviceStatus,
+                frontmostName: frontmost.name,
+                lastEvent: knobService.lastEvent
+            )
+
+            templateBar
         }
         .padding(18)
+    }
+
+    private var templateBar: some View {
+        HStack(spacing: 10) {
+            Text("快速模板")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            Picker("模板", selection: $selectedTemplate) {
+                ForEach(ActionTemplate.allCases) { template in
+                    Text(template.title).tag(template)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            Button("应用到当前配置") {
+                store.applyTemplate(selectedTemplate)
+            }
+
+            Button("为当前应用创建并套用") {
+                store.addCurrentApp(template: selectedTemplate)
+            }
+        }
     }
 
     private var editor: some View {
@@ -706,8 +793,7 @@ private struct AppIconView: View {
 private struct ActionEditorRow: View {
     let input: KnobInput
     @Binding var action: ActionConfig
-    @State private var isRecordingShortcut = false
-    @State private var shortcutMonitor: Any?
+    @State private var showShortcutRecorder = false
 
     private var keysText: Binding<String> {
         Binding(
@@ -728,9 +814,20 @@ private struct ActionEditorRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text(input.title)
-                    .font(.headline)
-                    .frame(width: 96, alignment: .leading)
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 8) {
+                        Text(gestureSymbol(input))
+                            .font(.title3.weight(.semibold))
+                            .frame(width: 24)
+                        Text(input.title)
+                            .font(.headline)
+                    }
+                    Text(actionSummary(action))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                .frame(width: 150, alignment: .leading)
 
                 Picker("类型", selection: actionType) {
                     ForEach(ActionType.allCases) { type in
@@ -748,8 +845,13 @@ private struct ActionEditorRow: View {
         }
         .padding(14)
         .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 8))
-        .onDisappear {
-            stopShortcutRecording()
+        .sheet(isPresented: $showShortcutRecorder) {
+            ShortcutRecorderSheet(input: input) { keys in
+                action.keys = keys
+                showShortcutRecorder = false
+            } onCancel: {
+                showShortcutRecorder = false
+            }
         }
     }
 
@@ -763,8 +865,8 @@ private struct ActionEditorRow: View {
                     .foregroundStyle(.secondary)
                 TextField("可手动输入，逗号分隔", text: keysText)
                     .textFieldStyle(.roundedBorder)
-                Button(isRecordingShortcut ? "请按组合键" : "录制组合键") {
-                    isRecordingShortcut ? stopShortcutRecording() : startShortcutRecording()
+                Button("录制组合键") {
+                    showShortcutRecorder = true
                 }
                 Button("清空") {
                     action.keys = []
@@ -810,14 +912,47 @@ private struct ActionEditorRow: View {
         }
     }
 
-    private func startShortcutRecording() {
-        stopShortcutRecording()
-        isRecordingShortcut = true
-        shortcutMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { event in
-            guard let key = keyName(for: event) else {
-                return nil
-            }
+}
 
+private struct ShortcutRecorderSheet: View {
+    let input: KnobInput
+    let onCapture: ([String]) -> Void
+    let onCancel: () -> Void
+    @State private var preview = "等待输入"
+    @State private var monitor: Any?
+
+    var body: some View {
+        VStack(spacing: 18) {
+            Text("录制组合键")
+                .font(.title2.weight(.semibold))
+            Text("为「\(input.title)」按下你想绑定的组合键")
+                .foregroundStyle(.secondary)
+            Text(preview)
+                .font(.system(size: 28, weight: .semibold, design: .rounded))
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 18)
+                .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
+            HStack {
+                Button("取消") {
+                    stop()
+                    onCancel()
+                }
+                Button("清空") {
+                    stop()
+                    onCapture([])
+                }
+            }
+        }
+        .padding(28)
+        .frame(width: 420)
+        .onAppear { start() }
+        .onDisappear { stop() }
+    }
+
+    private func start() {
+        stop()
+        monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { event in
+            guard let key = keyName(for: event) else { return nil }
             var keys: [String] = []
             let flags = event.modifierFlags
             if flags.contains(.command) { keys.append("command") }
@@ -826,19 +961,20 @@ private struct ActionEditorRow: View {
             if flags.contains(.shift) { keys.append("shift") }
             if flags.contains(.function) { keys.append("fn") }
             keys.append(key)
-
-            action.keys = keys
-            stopShortcutRecording()
+            preview = displayKeyList(keys)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+                stop()
+                onCapture(keys)
+            }
             return nil
         }
     }
 
-    private func stopShortcutRecording() {
-        if let shortcutMonitor {
-            NSEvent.removeMonitor(shortcutMonitor)
+    private func stop() {
+        if let monitor {
+            NSEvent.removeMonitor(monitor)
         }
-        shortcutMonitor = nil
-        isRecordingShortcut = false
+        monitor = nil
     }
 }
 
@@ -858,6 +994,66 @@ private struct StatusPill: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 5)
         .background(.quaternary, in: Capsule())
+    }
+}
+
+private struct StatusDashboard: View {
+    let running: Bool
+    let deviceStatus: String
+    let frontmostName: String
+    let lastEvent: String
+
+    var body: some View {
+        HStack(spacing: 10) {
+            DashboardTile(
+                title: "设备状态",
+                value: running ? "监听中" : "未监听",
+                detail: deviceStatus,
+                color: running ? .green : .gray
+            )
+            DashboardTile(
+                title: "当前应用",
+                value: frontmostName,
+                detail: "动作会按这个应用匹配",
+                color: .blue
+            )
+            DashboardTile(
+                title: "最近动作",
+                value: lastEvent == "暂无事件" ? "等待手轮输入" : lastEvent,
+                detail: "实时执行反馈",
+                color: .orange
+            )
+        }
+    }
+}
+
+private struct DashboardTile: View {
+    let title: String
+    let value: String
+    let detail: String
+    let color: Color
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(color)
+                    .frame(width: 8, height: 8)
+                Text(title)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Text(value)
+                .font(.system(size: 13, weight: .semibold))
+                .lineLimit(1)
+            Text(detail)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(.quaternary.opacity(0.55), in: RoundedRectangle(cornerRadius: 8))
     }
 }
 
@@ -1041,6 +1237,55 @@ private func defaultActions() -> [String: ActionConfig] {
     return actions
 }
 
+private func templateActions(_ template: ActionTemplate) -> [String: ActionConfig] {
+    switch template {
+    case .browser:
+        return [
+            KnobInput.rotateLeft.rawValue: shortcut("上一个标签页", ["control", "shift", "tab"]),
+            KnobInput.rotateRight.rawValue: shortcut("下一个标签页", ["control", "tab"]),
+            KnobInput.press.rawValue: shortcut("刷新页面", ["command", "r"]),
+            KnobInput.pressRotateLeft.rawValue: shortcut("后退", ["command", "["]),
+            KnobInput.pressRotateRight.rawValue: shortcut("前进", ["command", "]"])
+        ]
+    case .coding:
+        return [
+            KnobInput.rotateLeft.rawValue: shortcut("上一个编辑器", ["command", "shift", "["]),
+            KnobInput.rotateRight.rawValue: shortcut("下一个编辑器", ["command", "shift", "]"]),
+            KnobInput.press.rawValue: shortcut("命令面板", ["command", "shift", "p"]),
+            KnobInput.pressRotateLeft.rawValue: shortcut("上一个问题", ["f8"]),
+            KnobInput.pressRotateRight.rawValue: shortcut("下一个问题", ["shift", "f8"])
+        ]
+    case .media:
+        return [
+            KnobInput.rotateLeft.rawValue: ActionConfig(type: "key", description: "降低音量", keys: ["volume_down"], button: nil, clicks: nil, dx: nil, dy: nil, command: nil),
+            KnobInput.rotateRight.rawValue: ActionConfig(type: "key", description: "提高音量", keys: ["volume_up"], button: nil, clicks: nil, dx: nil, dy: nil, command: nil),
+            KnobInput.press.rawValue: ActionConfig(type: "key", description: "播放 / 暂停", keys: ["play_pause"], button: nil, clicks: nil, dx: nil, dy: nil, command: nil),
+            KnobInput.pressRotateLeft.rawValue: shortcut("上一首", ["previous_track"]),
+            KnobInput.pressRotateRight.rawValue: shortcut("下一首", ["next_track"])
+        ]
+    case .design:
+        return [
+            KnobInput.rotateLeft.rawValue: shortcut("缩小画笔", ["["]),
+            KnobInput.rotateRight.rawValue: shortcut("放大画笔", ["]"]),
+            KnobInput.press.rawValue: shortcut("画笔工具", ["b"]),
+            KnobInput.pressRotateLeft.rawValue: shortcut("降低硬度", ["shift", "["]),
+            KnobInput.pressRotateRight.rawValue: shortcut("提高硬度", ["shift", "]"])
+        ]
+    case .editing:
+        return [
+            KnobInput.rotateLeft.rawValue: shortcut("前一帧", ["left"]),
+            KnobInput.rotateRight.rawValue: shortcut("后一帧", ["right"]),
+            KnobInput.press.rawValue: shortcut("播放 / 暂停", ["space"]),
+            KnobInput.pressRotateLeft.rawValue: shortcut("向前大步移动", ["shift", "left"]),
+            KnobInput.pressRotateRight.rawValue: shortcut("向后大步移动", ["shift", "right"])
+        ]
+    }
+}
+
+private func shortcut(_ description: String, _ keys: [String]) -> ActionConfig {
+    ActionConfig(type: "shortcut", description: description, keys: keys, button: nil, clicks: nil, dx: nil, dy: nil, command: nil)
+}
+
 private func optionalString(_ binding: Binding<String?>) -> Binding<String> {
     Binding(
         get: { binding.wrappedValue ?? "" },
@@ -1096,6 +1341,47 @@ private func appInfoFromBundleID(_ bundleID: String) -> AppInfo? {
 
 private func displayKeyList(_ keys: [String]) -> String {
     keys.map { displayKeyName($0) }.joined(separator: " + ")
+}
+
+private func actionSummary(_ action: ActionConfig) -> String {
+    let desc = action.description?.trimmingCharacters(in: .whitespacesAndNewlines)
+    if let desc, !desc.isEmpty {
+        return desc
+    }
+
+    switch action.type {
+    case "shortcut", "key":
+        let keys = action.keys ?? []
+        return keys.isEmpty ? "未设置按键" : displayKeyList(keys)
+    case "mouse":
+        return "鼠标\(displayMouseButton(action.button ?? "left")) · \(action.clicks ?? 1) 次"
+    case "scroll":
+        return "横向 \(action.dx ?? 0)，纵向 \(action.dy ?? 0)"
+    case "shell":
+        return action.command?.isEmpty == false ? "执行命令" : "未设置命令"
+    case "noop":
+        return "忽略这个手势"
+    default:
+        return "未识别动作"
+    }
+}
+
+private func gestureSymbol(_ input: KnobInput) -> String {
+    switch input {
+    case .rotateLeft: return "↺"
+    case .rotateRight: return "↻"
+    case .press: return "●"
+    case .pressRotateLeft: return "●↺"
+    case .pressRotateRight: return "●↻"
+    }
+}
+
+private func displayMouseButton(_ value: String) -> String {
+    switch value.lowercased() {
+    case "right": return "右键"
+    case "middle", "center": return "中键"
+    default: return "左键"
+    }
 }
 
 private func parseKeyList(_ text: String) -> [String] {
