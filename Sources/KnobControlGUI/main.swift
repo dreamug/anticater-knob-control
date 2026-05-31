@@ -578,7 +578,7 @@ private final class KnobService: ObservableObject {
     @Published private(set) var inputAccessStatus = "输入监控：未检查"
     @Published private(set) var accessibilityStatus = "辅助功能：未检查"
 
-    private let triplePressGap: TimeInterval = 0.65
+    private let triplePressGap: TimeInterval = 0.55
     private var manager: IOHIDManager?
     private weak var store: ConfigStore?
     private var pendingPressActions: [PendingPressAction] = []
@@ -1228,27 +1228,28 @@ private struct ContentView: View {
                 Spacer(minLength: 0)
             }
 
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 10) {
-                    Text("快速模板")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
+            HStack(spacing: 10) {
+                Text("快速模板")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
 
-                    Picker("模板", selection: $selectedTemplate) {
-                        ForEach(ActionTemplate.allCases) { template in
-                            Text(template.title).tag(template)
-                        }
+                Picker("模板", selection: $selectedTemplate) {
+                    ForEach(ActionTemplate.allCases) { template in
+                        Text(template.title).tag(template)
                     }
-                    .pickerStyle(.segmented)
+                }
+                .pickerStyle(.segmented)
+                .frame(maxWidth: 360)
 
-                    Button("应用到当前配置") {
-                        store.applyTemplate(selectedTemplate, modifierMode: selectedModifierMode)
-                    }
+                Button("应用到当前配置") {
+                    store.applyTemplate(selectedTemplate, modifierMode: selectedModifierMode)
+                }
 
-                    Button("为当前应用创建并套用") {
-                        store.addCurrentApp(template: selectedTemplate, modifierMode: selectedModifierMode)
-                    }
+                Button("为当前应用创建并套用") {
+                    store.addCurrentApp(template: selectedTemplate, modifierMode: selectedModifierMode)
+                }
 
+                Menu("监听工具") {
                     Button("解除三击锁定") {
                         knobService.clearMappingLock()
                     }
@@ -1261,7 +1262,9 @@ private struct ContentView: View {
                     Button("音量自检") {
                         knobService.testSystemVolume()
                     }
+                }
 
+                Menu("权限设置") {
                     Button("请求权限") {
                         knobService.requestInputMonitoringAccess()
                     }
@@ -1278,6 +1281,8 @@ private struct ContentView: View {
                         knobService.openAccessibilitySettings()
                     }
                 }
+
+                Spacer(minLength: 0)
             }
         }
     }
