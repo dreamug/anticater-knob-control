@@ -26,6 +26,90 @@ private enum KnobInput: String, CaseIterable, Identifiable, Codable {
     }
 }
 
+private enum ModifierMode: String, CaseIterable, Identifiable, Codable {
+    case none
+    case command
+    case shift
+    case option
+    case control
+    case commandShift = "command_shift"
+    case commandOption = "command_option"
+    case commandControl = "command_control"
+    case shiftOption = "shift_option"
+    case shiftControl = "shift_control"
+    case optionControl = "option_control"
+    case commandShiftOption = "command_shift_option"
+    case commandShiftControl = "command_shift_control"
+    case commandOptionControl = "command_option_control"
+    case shiftOptionControl = "shift_option_control"
+    case commandShiftOptionControl = "command_shift_option_control"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .none: return "无修饰键"
+        case .command: return "⌘ 命令键"
+        case .shift: return "⇧ 上档键"
+        case .option: return "⌥ 选项键"
+        case .control: return "⌃ 控制键"
+        case .commandShift: return "⌘⇧ 命令键 + 上档键"
+        case .commandOption: return "⌘⌥ 命令键 + 选项键"
+        case .commandControl: return "⌘⌃ 命令键 + 控制键"
+        case .shiftOption: return "⇧⌥ 上档键 + 选项键"
+        case .shiftControl: return "⇧⌃ 上档键 + 控制键"
+        case .optionControl: return "⌥⌃ 选项键 + 控制键"
+        case .commandShiftOption: return "⌘⇧⌥ 命令键 + 上档键 + 选项键"
+        case .commandShiftControl: return "⌘⇧⌃ 命令键 + 上档键 + 控制键"
+        case .commandOptionControl: return "⌘⌥⌃ 命令键 + 选项键 + 控制键"
+        case .shiftOptionControl: return "⇧⌥⌃ 上档键 + 选项键 + 控制键"
+        case .commandShiftOptionControl: return "⌘⇧⌥⌃ 全部修饰键"
+        }
+    }
+
+    var compactTitle: String {
+        switch self {
+        case .none: return ""
+        case .command: return "⌘"
+        case .shift: return "⇧"
+        case .option: return "⌥"
+        case .control: return "⌃"
+        case .commandShift: return "⌘⇧"
+        case .commandOption: return "⌘⌥"
+        case .commandControl: return "⌘⌃"
+        case .shiftOption: return "⇧⌥"
+        case .shiftControl: return "⇧⌃"
+        case .optionControl: return "⌥⌃"
+        case .commandShiftOption: return "⌘⇧⌥"
+        case .commandShiftControl: return "⌘⇧⌃"
+        case .commandOptionControl: return "⌘⌥⌃"
+        case .shiftOptionControl: return "⇧⌥⌃"
+        case .commandShiftOptionControl: return "⌘⇧⌥⌃"
+        }
+    }
+
+    func mappingKey(for input: KnobInput) -> String {
+        self == .none ? input.rawValue : "\(rawValue)+\(input.rawValue)"
+    }
+
+    func gestureTitle(for input: KnobInput) -> String {
+        let base = "\(gestureSymbol(input)) \(input.title)"
+        guard self != .none else { return base }
+        return "\(compactTitle) + \(base)"
+    }
+
+    static func current() -> ModifierMode {
+        let flags = CGEventSource.flagsState(.combinedSessionState)
+        var parts: [String] = []
+        if flags.contains(.maskCommand) { parts.append("command") }
+        if flags.contains(.maskShift) { parts.append("shift") }
+        if flags.contains(.maskAlternate) { parts.append("option") }
+        if flags.contains(.maskControl) { parts.append("control") }
+        guard !parts.isEmpty else { return .none }
+        return allCases.first { $0.rawValue == parts.joined(separator: "_") } ?? .none
+    }
+}
+
 private enum ActionType: String, CaseIterable, Identifiable, Codable {
     case shortcut
     case key
@@ -296,23 +380,24 @@ private final class ConfigStore: ObservableObject {
         }
     }
 
-    func actionBinding(_ input: KnobInput) -> Binding<ActionConfig> {
-        Binding(
+    func actionBinding(_ input: KnobInput, modifierMode: ModifierMode) -> Binding<ActionConfig> {
+        let key = modifierMode.mappingKey(for: input)
+        return Binding(
             get: {
                 switch self.selectedProfile {
                 case .global:
-                    return self.config.global[input.rawValue] ?? ActionConfig.empty()
+                    return self.config.global[key] ?? ActionConfig.empty()
                 case .app(let bundleID):
-                    return self.config.apps[bundleID]?[input.rawValue] ?? self.config.global[input.rawValue] ?? ActionConfig.empty()
+                    return self.config.apps[bundleID]?[key] ?? self.config.global[key] ?? ActionConfig.empty()
                 }
             },
             set: { newValue in
                 switch self.selectedProfile {
                 case .global:
-                    self.config.global[input.rawValue] = newValue
+                    self.config.global[key] = newValue
                 case .app(let bundleID):
                     var appActions = self.config.apps[bundleID] ?? [:]
-                    appActions[input.rawValue] = newValue
+                    appActions[key] = newValue
                     self.config.apps[bundleID] = appActions
                 }
                 self.save(silent: true)
@@ -336,7 +421,7 @@ private final class ConfigStore: ObservableObject {
         save(silent: true)
     }
 
-    func addCurrentApp(template: ActionTemplate? = nil) {
+    func addCurrentApp(template: ActionTemplate? = nil, modifierMode: ModifierMode = .none) {
         guard let app = NSWorkspace.shared.frontmostApplication,
               let bundleID = app.bundleIdentifier else {
             status = "没有找到当前应用"
@@ -345,19 +430,30 @@ private final class ConfigStore: ObservableObject {
 
         addApp(bundleID: bundleID)
         if let template {
-            applyTemplate(template)
+            applyTemplate(template, modifierMode: modifierMode)
         }
     }
 
-    func applyTemplate(_ template: ActionTemplate) {
+    func applyTemplate(_ template: ActionTemplate, modifierMode: ModifierMode = .none) {
         let actions = templateActions(template)
+        let modeSuffix = modifierMode == .none ? "" : "（\(modifierMode.title)）"
         switch selectedProfile {
         case .global:
-            config.global = actions
-            status = "已应用「\(template.title)」模板到全局默认"
+            if modifierMode == .none {
+                config.global = actions
+            } else {
+                config.global = merging(actions, into: config.global, modifierMode: modifierMode)
+            }
+            status = "已应用「\(template.title)」模板到全局默认\(modeSuffix)"
         case .app(let bundleID):
-            config.apps[bundleID] = actions
-            status = "已应用「\(template.title)」模板"
+            if modifierMode == .none {
+                config.apps[bundleID] = actions
+            } else {
+                var appActions = config.apps[bundleID] ?? defaultActions()
+                appActions = merging(actions, into: appActions, modifierMode: modifierMode)
+                config.apps[bundleID] = appActions
+            }
+            status = "已应用「\(template.title)」模板\(modeSuffix)"
         }
         save(silent: true)
     }
@@ -412,15 +508,34 @@ private final class ConfigStore: ObservableObject {
         return exampleURL
     }
 
-    func action(for input: KnobInput, activeBundleID: String, activeAppName: String, lockedBundleID: String?) -> ActionResolution {
+    func action(for input: KnobInput, modifierMode: ModifierMode, activeBundleID: String, activeAppName: String, lockedBundleID: String?) -> ActionResolution {
         if let lockedBundleID, lockedBundleID == activeBundleID {
-            if let action = config.apps[activeBundleID]?[input.rawValue] {
-                return ActionResolution(action: action, source: "\(activeAppName) 映射")
+            if let appActions = config.apps[activeBundleID] {
+                if let action = appActions[modifierMode.mappingKey(for: input)], modifierMode != .none {
+                    return ActionResolution(action: action, source: "\(activeAppName) 映射 · \(modifierMode.compactTitle)")
+                }
+                if let action = appActions[input.rawValue] {
+                    return ActionResolution(action: action, source: "\(activeAppName) 映射")
+                }
+            }
+            if let action = config.global[modifierMode.mappingKey(for: input)], modifierMode != .none {
+                return ActionResolution(action: action, source: "全局默认 · \(modifierMode.compactTitle)")
             }
             return ActionResolution(action: config.global[input.rawValue], source: "全局默认")
         }
 
+        if let action = config.global[modifierMode.mappingKey(for: input)], modifierMode != .none {
+            return ActionResolution(action: action, source: "全局默认 · \(modifierMode.compactTitle)")
+        }
         return ActionResolution(action: config.global[input.rawValue], source: "全局默认")
+    }
+
+    private func merging(_ source: [String: ActionConfig], into target: [String: ActionConfig], modifierMode: ModifierMode) -> [String: ActionConfig] {
+        var result = target
+        for input in KnobInput.allCases {
+            result[modifierMode.mappingKey(for: input)] = source[input.rawValue] ?? ActionConfig.empty()
+        }
+        return result
     }
 }
 
@@ -454,6 +569,7 @@ private final class KnobService: ObservableObject {
     @Published private(set) var lockedAppName: String?
     @Published private(set) var inputCounts: [KnobInput: Int] = [:]
     @Published private(set) var lastInput: KnobInput?
+    @Published private(set) var lastModifierMode: ModifierMode = .none
     @Published private(set) var pressSequenceCount = 0
     @Published private(set) var rawEventCount = 0
     @Published private(set) var decodedEventCount = 0
@@ -593,6 +709,7 @@ private final class KnobService: ObservableObject {
     func resetInputCounters() {
         inputCounts = [:]
         lastInput = nil
+        lastModifierMode = .none
         pressSequenceCount = 0
         rawEventCount = 0
         decodedEventCount = 0
@@ -655,21 +772,23 @@ private final class KnobService: ObservableObject {
     private func handle(_ input: KnobInput) {
         guard let store else { return }
         let app = currentAppContext()
+        let modifierMode = ModifierMode.current()
         rememberExternalApp(app)
-        recordInput(input)
+        recordInput(input, modifierMode: modifierMode)
 
-        if input == .press {
+        if input == .press, modifierMode == .none {
             handlePress(app: app, store: store)
             return
         }
 
         let resolution = store.action(
             for: input,
+            modifierMode: modifierMode,
             activeBundleID: app.bundleID,
             activeAppName: app.name,
             lockedBundleID: effectiveLockedBundleID(for: app)
         )
-        perform(input: input, app: app, resolution: resolution)
+        perform(input: input, modifierMode: modifierMode, app: app, resolution: resolution)
     }
 
     private func handlePress(app: AppContext, store: ConfigStore) {
@@ -684,6 +803,7 @@ private final class KnobService: ObservableObject {
 
         let resolution = store.action(
             for: .press,
+            modifierMode: .none,
             activeBundleID: app.bundleID,
             activeAppName: app.name,
             lockedBundleID: effectiveLockedBundleID(for: app)
@@ -791,7 +911,7 @@ private final class KnobService: ObservableObject {
         pressSequenceCount = 0
 
         for pending in actions {
-            perform(input: .press, app: pending.app, resolution: pending.resolution)
+            perform(input: .press, modifierMode: .none, app: pending.app, resolution: pending.resolution)
         }
     }
 
@@ -807,9 +927,10 @@ private final class KnobService: ObservableObject {
         return lastExternalApp ?? app
     }
 
-    private func recordInput(_ input: KnobInput) {
+    private func recordInput(_ input: KnobInput, modifierMode: ModifierMode) {
         inputCounts[input, default: 0] += 1
         lastInput = input
+        lastModifierMode = modifierMode
     }
 
     private func recordHIDEvent(page: UInt32, usage: UInt32, intValue: Int, input: KnobInput?) {
@@ -835,12 +956,13 @@ private final class KnobService: ObservableObject {
         }
     }
 
-    private func perform(input: KnobInput, app: AppContext, resolution: ActionResolution) {
+    private func perform(input: KnobInput, modifierMode: ModifierMode, app: AppContext, resolution: ActionResolution) {
+        let gestureTitle = modifierMode.gestureTitle(for: input)
         guard let action = resolution.action else {
-            lastEvent = "\(clock()) \(input.rawValue) / \(app.name) / \(resolution.source) / 无动作"
+            lastEvent = "\(clock()) \(gestureTitle) / \(app.name) / \(resolution.source) / 无动作"
             OverlayPresenter.shared.show(ActionOverlayPayload(
                 title: "无动作",
-                subtitle: "\(gestureSymbol(input)) \(input.title) · \(resolution.source)",
+                subtitle: "\(gestureTitle) · \(resolution.source)",
                 systemImage: overlaySystemImage(for: input),
                 tint: .secondary,
                 progress: nil,
@@ -851,10 +973,10 @@ private final class KnobService: ObservableObject {
 
         refreshAccessibilityStatus()
         if ActionExecutor.needsAccessibility(action), !AXIsProcessTrusted() {
-            lastEvent = "\(clock()) \(input.rawValue) / \(app.name) / \(resolution.source) / 需要辅助功能权限 / failed"
+            lastEvent = "\(clock()) \(gestureTitle) / \(app.name) / \(resolution.source) / 需要辅助功能权限 / failed"
             OverlayPresenter.shared.show(ActionOverlayPayload(
                 title: "需要辅助功能权限",
-                subtitle: "\(gestureSymbol(input)) \(input.title) · \(resolution.source)",
+                subtitle: "\(gestureTitle) · \(resolution.source)",
                 systemImage: "exclamationmark.triangle.fill",
                 tint: .orange,
                 progress: nil,
@@ -865,10 +987,10 @@ private final class KnobService: ObservableObject {
 
         let result = ActionExecutor.run(action)
         let detail = result.detail ?? (action.description?.isEmpty == false ? action.description! : action.type)
-        lastEvent = "\(clock()) \(input.rawValue) / \(app.name) / \(resolution.source) / \(detail) / \(result.ok ? "ok" : "failed")"
+        lastEvent = "\(clock()) \(gestureTitle) / \(app.name) / \(resolution.source) / \(detail) / \(result.ok ? "ok" : "failed")"
         let overlay = result.overlay ?? ActionOverlayPayload(
             title: result.ok ? detail : "执行失败",
-            subtitle: "\(gestureSymbol(input)) \(input.title) · \(resolution.source)",
+            subtitle: "\(gestureTitle) · \(resolution.source)",
             systemImage: result.ok ? overlaySystemImage(for: input) : "exclamationmark.triangle.fill",
             tint: result.ok ? .accentColor : .red,
             progress: nil,
@@ -954,6 +1076,7 @@ private struct ContentView: View {
     @EnvironmentObject private var appCatalog: AppCatalog
     @State private var newBundleID = ""
     @State private var selectedTemplate: ActionTemplate = .browser
+    @State private var selectedModifierMode: ModifierMode = .none
 
     var body: some View {
         NavigationSplitView {
@@ -1069,6 +1192,7 @@ private struct ContentView: View {
                 accessibilityStatus: knobService.accessibilityStatus,
                 inputCounts: knobService.inputCounts,
                 lastInput: knobService.lastInput,
+                lastModifierMode: knobService.lastModifierMode,
                 pressSequenceCount: knobService.pressSequenceCount,
                 rawEventCount: knobService.rawEventCount,
                 decodedEventCount: knobService.decodedEventCount,
@@ -1083,53 +1207,77 @@ private struct ContentView: View {
     }
 
     private var templateBar: some View {
-        HStack(spacing: 10) {
-            Text("快速模板")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                Text("编辑模式")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
 
-            Picker("模板", selection: $selectedTemplate) {
-                ForEach(ActionTemplate.allCases) { template in
-                    Text(template.title).tag(template)
+                Picker("修饰键", selection: $selectedModifierMode) {
+                    ForEach(ModifierMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
                 }
-            }
-            .pickerStyle(.segmented)
+                .frame(width: 230)
 
-            Button("应用到当前配置") {
-                store.applyTemplate(selectedTemplate)
-            }
+                Text(selectedModifierMode == .none ? "正在编辑普通手轮动作" : "正在编辑 \(selectedModifierMode.title) + 手轮动作")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
 
-            Button("为当前应用创建并套用") {
-                store.addCurrentApp(template: selectedTemplate)
-            }
-
-            Button("解除三击锁定") {
-                knobService.clearMappingLock()
-            }
-            .disabled(knobService.lockedBundleID == nil)
-
-            Button("清空计数") {
-                knobService.resetInputCounters()
+                Spacer(minLength: 0)
             }
 
-            Button("音量自检") {
-                knobService.testSystemVolume()
-            }
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 10) {
+                    Text("快速模板")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
 
-            Button("请求权限") {
-                knobService.requestInputMonitoringAccess()
-            }
+                    Picker("模板", selection: $selectedTemplate) {
+                        ForEach(ActionTemplate.allCases) { template in
+                            Text(template.title).tag(template)
+                        }
+                    }
+                    .pickerStyle(.segmented)
 
-            Button("打开输入监控") {
-                knobService.openInputMonitoringSettings()
-            }
+                    Button("应用到当前配置") {
+                        store.applyTemplate(selectedTemplate, modifierMode: selectedModifierMode)
+                    }
 
-            Button("请求辅助功能") {
-                knobService.requestAccessibilityAccess()
-            }
+                    Button("为当前应用创建并套用") {
+                        store.addCurrentApp(template: selectedTemplate, modifierMode: selectedModifierMode)
+                    }
 
-            Button("打开辅助功能") {
-                knobService.openAccessibilitySettings()
+                    Button("解除三击锁定") {
+                        knobService.clearMappingLock()
+                    }
+                    .disabled(knobService.lockedBundleID == nil)
+
+                    Button("清空计数") {
+                        knobService.resetInputCounters()
+                    }
+
+                    Button("音量自检") {
+                        knobService.testSystemVolume()
+                    }
+
+                    Button("请求权限") {
+                        knobService.requestInputMonitoringAccess()
+                    }
+
+                    Button("打开输入监控") {
+                        knobService.openInputMonitoringSettings()
+                    }
+
+                    Button("请求辅助功能") {
+                        knobService.requestAccessibilityAccess()
+                    }
+
+                    Button("打开辅助功能") {
+                        knobService.openAccessibilitySettings()
+                    }
+                }
             }
         }
     }
@@ -1138,7 +1286,11 @@ private struct ContentView: View {
         ScrollView {
             VStack(spacing: 14) {
                 ForEach(KnobInput.allCases) { input in
-                    ActionEditorRow(input: input, action: store.actionBinding(input))
+                    ActionEditorRow(
+                        input: input,
+                        modifierMode: selectedModifierMode,
+                        action: store.actionBinding(input, modifierMode: selectedModifierMode)
+                    )
                 }
             }
             .padding(18)
@@ -1251,6 +1403,7 @@ private struct AppIconView: View {
 
 private struct ActionEditorRow: View {
     let input: KnobInput
+    let modifierMode: ModifierMode
     @Binding var action: ActionConfig
     @State private var showShortcutRecorder = false
 
@@ -1278,7 +1431,7 @@ private struct ActionEditorRow: View {
                         Text(gestureSymbol(input))
                             .font(.title3.weight(.semibold))
                             .frame(width: 24)
-                        Text(input.title)
+                        Text(modifierMode == .none ? input.title : "\(modifierMode.compactTitle) + \(input.title)")
                             .font(.headline)
                     }
                     Text(actionSummary(action))
@@ -1305,7 +1458,7 @@ private struct ActionEditorRow: View {
         .padding(14)
         .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 8))
         .sheet(isPresented: $showShortcutRecorder) {
-            ShortcutRecorderSheet(input: input) { keys in
+            ShortcutRecorderSheet(input: input, modifierMode: modifierMode) { keys in
                 action.keys = keys
                 showShortcutRecorder = false
             } onCancel: {
@@ -1375,6 +1528,7 @@ private struct ActionEditorRow: View {
 
 private struct ShortcutRecorderSheet: View {
     let input: KnobInput
+    let modifierMode: ModifierMode
     let onCapture: ([String]) -> Void
     let onCancel: () -> Void
     @State private var preview = "等待输入"
@@ -1384,7 +1538,7 @@ private struct ShortcutRecorderSheet: View {
         VStack(spacing: 18) {
             Text("录制组合键")
                 .font(.title2.weight(.semibold))
-            Text("为「\(input.title)」按下你想绑定的组合键")
+            Text("为「\(modifierMode.gestureTitle(for: input))」按下你想绑定的组合键")
                 .foregroundStyle(.secondary)
             Text(preview)
                 .font(.system(size: 28, weight: .semibold, design: .rounded))
@@ -1467,6 +1621,7 @@ private struct StatusDashboard: View {
     let accessibilityStatus: String
     let inputCounts: [KnobInput: Int]
     let lastInput: KnobInput?
+    let lastModifierMode: ModifierMode
     let pressSequenceCount: Int
     let rawEventCount: Int
     let decodedEventCount: Int
@@ -1506,6 +1661,7 @@ private struct StatusDashboard: View {
             InputMonitorStrip(
                 inputCounts: inputCounts,
                 lastInput: lastInput,
+                lastModifierMode: lastModifierMode,
                 rawEventCount: rawEventCount,
                 decodedEventCount: decodedEventCount,
                 ignoredEventCount: ignoredEventCount,
@@ -1518,6 +1674,7 @@ private struct StatusDashboard: View {
 private struct InputMonitorStrip: View {
     let inputCounts: [KnobInput: Int]
     let lastInput: KnobInput?
+    let lastModifierMode: ModifierMode
     let rawEventCount: Int
     let decodedEventCount: Int
     let ignoredEventCount: Int
@@ -1532,6 +1689,8 @@ private struct InputMonitorStrip: View {
                 Text("原始 \(rawEventCount)")
                 Text("识别 \(decodedEventCount)")
                 Text("忽略 \(ignoredEventCount)")
+                Text("最近 \(lastInput.map { lastModifierMode.gestureTitle(for: $0) } ?? "暂无")")
+                    .foregroundStyle(.secondary)
                 Text(lastRawEvent)
                     .lineLimit(1)
                     .foregroundStyle(.secondary)
