@@ -1571,6 +1571,11 @@ private struct DashboardTile: View {
     }
 }
 
+private enum ActionOverlayStyle {
+    case action
+    case macVolume
+}
+
 private struct ActionOverlayPayload {
     let title: String
     let subtitle: String
@@ -1578,12 +1583,22 @@ private struct ActionOverlayPayload {
     let tint: Color
     let progress: Double?
     let ok: Bool
+    var style: ActionOverlayStyle = .action
 }
 
 private struct ActionOverlayView: View {
     let payload: ActionOverlayPayload
 
     var body: some View {
+        switch payload.style {
+        case .action:
+            actionOverlay
+        case .macVolume:
+            MacVolumeOverlayView(payload: payload)
+        }
+    }
+
+    private var actionOverlay: some View {
         HStack(spacing: 14) {
             Image(systemName: payload.systemImage)
                 .font(.system(size: 26, weight: .semibold))
@@ -1626,6 +1641,45 @@ private struct ActionOverlayView: View {
     }
 }
 
+private struct MacVolumeOverlayView: View {
+    let payload: ActionOverlayPayload
+
+    private let segmentCount = 16
+
+    var body: some View {
+        HStack(spacing: 14) {
+            Image(systemName: payload.systemImage)
+                .font(.system(size: 26, weight: .semibold))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(.primary)
+                .frame(width: 30)
+
+            HStack(spacing: 3) {
+                ForEach(0..<segmentCount, id: \.self) { index in
+                    RoundedRectangle(cornerRadius: 2, style: .continuous)
+                        .fill(index < filledSegments ? Color.primary.opacity(0.9) : Color.secondary.opacity(0.25))
+                        .frame(width: 6, height: 23)
+                }
+            }
+            .accessibilityLabel(payload.title)
+        }
+        .padding(.horizontal, 18)
+        .frame(width: 188, height: 70)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(.white.opacity(0.14), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.18), radius: 18, x: 0, y: 8)
+    }
+
+    private var filledSegments: Int {
+        let progress = min(max(payload.progress ?? 0, 0), 1)
+        guard progress > 0 else { return 0 }
+        return max(1, Int((progress * Double(segmentCount)).rounded(.up)))
+    }
+}
+
 private final class OverlayPanel: NSPanel {
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
@@ -1656,7 +1710,7 @@ private final class OverlayPresenter {
             Task { @MainActor in self?.hide() }
         }
         hideWorkItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.6, execute: workItem)
+        DispatchQueue.main.asyncAfter(deadline: .now() + displayDuration(for: payload), execute: workItem)
     }
 
     private func hide() {
@@ -1711,7 +1765,21 @@ private final class OverlayPresenter {
     }
 
     private func overlaySize(for payload: ActionOverlayPayload) -> NSSize {
-        NSSize(width: 310, height: payload.progress == nil ? 88 : 108)
+        switch payload.style {
+        case .action:
+            return NSSize(width: 310, height: payload.progress == nil ? 88 : 108)
+        case .macVolume:
+            return NSSize(width: 188, height: 70)
+        }
+    }
+
+    private func displayDuration(for payload: ActionOverlayPayload) -> TimeInterval {
+        switch payload.style {
+        case .action:
+            return 1.6
+        case .macVolume:
+            return 1.15
+        }
     }
 }
 
@@ -1932,7 +2000,8 @@ private enum SystemAudioController {
             systemImage: speakerImage(for: Float32(overlayValue)),
             tint: write.ok ? .accentColor : .red,
             progress: overlayValue,
-            ok: write.ok
+            ok: write.ok,
+            style: .macVolume
         )
         return write.ok ? .success(detail, overlay: overlay) : .failure(detail, overlay: overlay)
     }
@@ -2029,7 +2098,8 @@ private enum SystemAudioController {
                 systemImage: "speaker.slash.fill",
                 tint: write.ok ? .accentColor : .red,
                 progress: after.map { Double($0.value) },
-                ok: write.ok
+                ok: write.ok,
+                style: .macVolume
             )
             return write.ok ? .success(detail, overlay: overlay) : .failure(detail, overlay: overlay)
         }
@@ -2043,8 +2113,9 @@ private enum SystemAudioController {
             subtitle: "默认输出设备",
             systemImage: muted == 0 ? "speaker.slash.fill" : "speaker.wave.2.fill",
             tint: ok ? .accentColor : .red,
-            progress: nil,
-            ok: ok
+            progress: muted == 0 ? 0 : currentVolume(deviceID: deviceID).map { Double($0.value) },
+            ok: ok,
+            style: .macVolume
         )
         return ok ? .success(detail, overlay: overlay) : .failure(detail, overlay: overlay)
     }
