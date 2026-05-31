@@ -92,6 +92,8 @@ ANTICATER_CODE_SIGN_IDENTITY="Apple Development: your@email.com (TEAMID)" ./buil
 
 把 `手轮控制台` 加进去后，重新打开 App 或再次点击「启动监听」。
 
+其中「输入监控」负责让 App 读取手轮事件；「辅助功能」负责让 App 发出快捷键、媒体键、鼠标和滚动动作。如果 dashboard 能看到手轮输入，但动作没有生效，请优先检查「辅助功能」是否已允许。
+
 ## 配置应用动作
 
 左侧会显示：
@@ -162,6 +164,8 @@ build/ANTICATERKnobControl.app
 然后完全退出并重新打开 App。
 
 也可以在 App 右侧点击「请求权限」或「打开输入监控」。
+
+如果动作显示 `需要辅助功能权限 / failed`，请点击「请求辅助功能」或「打开辅助功能」，然后允许 `手轮控制台`。
 
 如果「原始」增加但「识别」不增加，可以把界面里显示的最后一条 HID 原始事件发到 issue 里。
 

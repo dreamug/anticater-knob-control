@@ -429,6 +429,7 @@ private final class KnobService: ObservableObject {
     @Published private(set) var ignoredEventCount = 0
     @Published private(set) var lastRawEvent = "暂无 HID 输入"
     @Published private(set) var inputAccessStatus = "输入监控：未检查"
+    @Published private(set) var accessibilityStatus = "辅助功能：未检查"
 
     private let triplePressGap: TimeInterval = 1.2
     private var manager: IOHIDManager?
@@ -463,6 +464,7 @@ private final class KnobService: ObservableObject {
         guard !isRunning else { return }
 
         refreshInputAccessStatus()
+        refreshAccessibilityStatus()
         self.store = store
         let manager = IOHIDManagerCreate(kCFAllocatorDefault, IOOptionBits(kIOHIDOptionsTypeNone))
         self.manager = manager
@@ -573,6 +575,20 @@ private final class KnobService: ObservableObject {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent") {
             NSWorkspace.shared.open(url)
             lastEvent = "\(clock()) 已打开输入监控设置"
+        }
+    }
+
+    func requestAccessibilityAccess() {
+        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+        let granted = AXIsProcessTrustedWithOptions(options)
+        refreshAccessibilityStatus()
+        lastEvent = granted ? "\(clock()) 辅助功能权限已允许" : "\(clock()) 已请求辅助功能权限，请在系统设置确认"
+    }
+
+    func openAccessibilitySettings() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+            NSWorkspace.shared.open(url)
+            lastEvent = "\(clock()) 已打开辅助功能设置"
         }
     }
 
@@ -701,6 +717,12 @@ private final class KnobService: ObservableObject {
             return
         }
 
+        refreshAccessibilityStatus()
+        if ActionExecutor.needsAccessibility(action), !AXIsProcessTrusted() {
+            lastEvent = "\(clock()) \(input.rawValue) / \(app.name) / \(resolution.source) / 需要辅助功能权限 / failed"
+            return
+        }
+
         let ok = ActionExecutor.run(action)
         let detail = action.description?.isEmpty == false ? action.description! : action.type
         lastEvent = "\(clock()) \(input.rawValue) / \(app.name) / \(resolution.source) / \(detail) / \(ok ? "ok" : "failed")"
@@ -717,6 +739,10 @@ private final class KnobService: ObservableObject {
     private func updateConnectedDevice(_ name: String) {
         connectedDeviceName = name
         deviceStatus = "\(listenMode)：\(name)"
+    }
+
+    private func refreshAccessibilityStatus() {
+        accessibilityStatus = AXIsProcessTrusted() ? "辅助功能：已允许" : "辅助功能：未允许"
     }
 }
 
@@ -752,6 +778,7 @@ private struct KnobControlApp: App {
             Divider()
             Text(knobService.deviceStatus)
             Text(knobService.inputAccessStatus)
+            Text(knobService.accessibilityStatus)
             Text("映射模式：\(knobService.lockModeTitle)")
             Text(knobService.lastEvent)
             Divider()
@@ -882,6 +909,7 @@ private struct ContentView: View {
                     frontmostName: frontmost.name
                 ),
                 inputAccessStatus: knobService.inputAccessStatus,
+                accessibilityStatus: knobService.accessibilityStatus,
                 inputCounts: knobService.inputCounts,
                 lastInput: knobService.lastInput,
                 pressSequenceCount: knobService.pressSequenceCount,
@@ -933,6 +961,14 @@ private struct ContentView: View {
 
             Button("打开输入监控") {
                 knobService.openInputMonitoringSettings()
+            }
+
+            Button("请求辅助功能") {
+                knobService.requestAccessibilityAccess()
+            }
+
+            Button("打开辅助功能") {
+                knobService.openAccessibilitySettings()
             }
         }
     }
@@ -1265,6 +1301,7 @@ private struct StatusDashboard: View {
     let lockMode: String
     let effectiveMapping: String
     let inputAccessStatus: String
+    let accessibilityStatus: String
     let inputCounts: [KnobInput: Int]
     let lastInput: KnobInput?
     let pressSequenceCount: Int
@@ -1280,7 +1317,7 @@ private struct StatusDashboard: View {
                 DashboardTile(
                     title: "设备状态",
                     value: running ? "监听中" : "未监听",
-                    detail: "\(deviceStatus) · \(inputAccessStatus)",
+                    detail: "\(deviceStatus) · \(inputAccessStatus) · \(accessibilityStatus)",
                     color: running ? .green : .gray
                 )
                 DashboardTile(
@@ -1415,6 +1452,15 @@ private enum ActionExecutor {
         case "shell":
             return runShell(action.command)
         case "noop":
+            return true
+        default:
+            return false
+        }
+    }
+
+    static func needsAccessibility(_ action: ActionConfig) -> Bool {
+        switch action.type {
+        case "shortcut", "key", "mouse", "scroll":
             return true
         default:
             return false
