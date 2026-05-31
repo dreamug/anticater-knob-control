@@ -432,11 +432,13 @@ private final class KnobService: ObservableObject {
     @Published private(set) var inputAccessStatus = "输入监控：未检查"
     @Published private(set) var accessibilityStatus = "辅助功能：未检查"
 
-    private let triplePressGap: TimeInterval = 1.2
+    private let triplePressGap: TimeInterval = 1.5
     private var manager: IOHIDManager?
     private weak var store: ConfigStore?
     private var pendingPressActions: [PendingPressAction] = []
     private var pendingPressWorkItem: DispatchWorkItem?
+    private var pendingPressTargetApp: AppContext?
+    private var lastExternalApp: AppContext?
     private var listenMode = "未监听"
     private var connectedDeviceName: String?
 
@@ -623,6 +625,7 @@ private final class KnobService: ObservableObject {
     private func handle(_ input: KnobInput) {
         guard let store else { return }
         let app = currentAppContext()
+        rememberExternalApp(app)
         recordInput(input)
 
         if input == .press {
@@ -642,9 +645,12 @@ private final class KnobService: ObservableObject {
     private func handlePress(app: AppContext, store: ConfigStore) {
         let now = Date()
         if let last = pendingPressActions.last,
-           last.app.bundleID != app.bundleID || now.timeIntervalSince(last.date) > triplePressGap {
+           now.timeIntervalSince(last.date) > triplePressGap {
             flushPendingPressActions()
         }
+
+        let targetApp = pendingPressTargetApp ?? lockTargetApp(for: app)
+        pendingPressTargetApp = targetApp
 
         let resolution = store.action(
             for: .press,
@@ -659,23 +665,48 @@ private final class KnobService: ObservableObject {
             cancelPendingPressWorkItem()
             pendingPressActions.removeAll()
             pressSequenceCount = 0
-            toggleMappingLock(for: app)
+            pendingPressTargetApp = nil
+            toggleMappingLock(for: targetApp)
             return
         }
 
-        lastEvent = "\(clock()) press / \(app.name) / 等待三击确认（\(pendingPressActions.count)/3）"
+        lastEvent = "\(clock()) press / \(targetApp.name) / 等待三击确认（\(pendingPressActions.count)/3）"
+        OverlayPresenter.shared.show(ActionOverlayPayload(
+            title: "三击确认 \(pendingPressActions.count)/3",
+            subtitle: "目标：\(targetApp.name)",
+            systemImage: "hand.tap.fill",
+            tint: .accentColor,
+            progress: Double(pendingPressActions.count) / 3.0,
+            ok: true
+        ))
         schedulePendingPressFlush()
     }
 
     private func toggleMappingLock(for app: AppContext) {
         guard app.bundleID != "unknown" else {
             lastEvent = "\(clock()) 三击 / 没有找到当前应用"
+            OverlayPresenter.shared.show(ActionOverlayPayload(
+                title: "三击失败",
+                subtitle: "没有找到当前应用",
+                systemImage: "exclamationmark.triangle.fill",
+                tint: .orange,
+                progress: nil,
+                ok: false
+            ))
             return
         }
         guard !isSelfApp(bundleID: app.bundleID) else {
             lockedBundleID = nil
             lockedAppName = nil
             lastEvent = "\(clock()) 三击 / 控制台使用全局默认"
+            OverlayPresenter.shared.show(ActionOverlayPayload(
+                title: "已恢复全局默认",
+                subtitle: "控制台不启用应用锁定",
+                systemImage: "lock.open.fill",
+                tint: .accentColor,
+                progress: nil,
+                ok: true
+            ))
             return
         }
 
@@ -683,10 +714,26 @@ private final class KnobService: ObservableObject {
             lockedBundleID = nil
             lockedAppName = nil
             lastEvent = "\(clock()) 三击 / 已恢复全局默认"
+            OverlayPresenter.shared.show(ActionOverlayPayload(
+                title: "已恢复全局默认",
+                subtitle: app.name,
+                systemImage: "lock.open.fill",
+                tint: .accentColor,
+                progress: nil,
+                ok: true
+            ))
         } else {
             lockedBundleID = app.bundleID
             lockedAppName = app.name
             lastEvent = "\(clock()) 三击 / 已锁定 \(app.name)"
+            OverlayPresenter.shared.show(ActionOverlayPayload(
+                title: "已锁定 \(app.name)",
+                subtitle: "应用映射已生效",
+                systemImage: "lock.fill",
+                tint: .accentColor,
+                progress: nil,
+                ok: true
+            ))
         }
     }
 
@@ -710,11 +757,24 @@ private final class KnobService: ObservableObject {
         cancelPendingPressWorkItem()
         let actions = pendingPressActions
         pendingPressActions.removeAll()
+        pendingPressTargetApp = nil
         pressSequenceCount = 0
 
         for pending in actions {
             perform(input: .press, app: pending.app, resolution: pending.resolution)
         }
+    }
+
+    private func rememberExternalApp(_ app: AppContext) {
+        guard app.bundleID != "unknown", !isSelfApp(bundleID: app.bundleID) else { return }
+        lastExternalApp = app
+    }
+
+    private func lockTargetApp(for app: AppContext) -> AppContext {
+        if app.bundleID != "unknown", !isSelfApp(bundleID: app.bundleID) {
+            return app
+        }
+        return lastExternalApp ?? app
     }
 
     private func recordInput(_ input: KnobInput) {
