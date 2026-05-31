@@ -569,6 +569,22 @@ private final class KnobService: ObservableObject {
         lastEvent = "\(clock()) 已清空输入计数"
     }
 
+    func testSystemVolume() {
+        let action = ActionConfig(
+            type: "key",
+            description: "音量自检",
+            keys: ["volume_up"],
+            button: nil,
+            clicks: nil,
+            dx: nil,
+            dy: nil,
+            command: nil
+        )
+        let result = ActionExecutor.run(action)
+        let detail = result.detail ?? action.description ?? "音量自检"
+        lastEvent = "\(clock()) 音量自检 / \(detail) / \(result.ok ? "ok" : "failed")"
+    }
+
     func requestInputMonitoringAccess() {
         let granted = IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)
         refreshInputAccessStatus()
@@ -733,9 +749,9 @@ private final class KnobService: ObservableObject {
             return
         }
 
-        let ok = ActionExecutor.run(action)
-        let detail = action.description?.isEmpty == false ? action.description! : action.type
-        lastEvent = "\(clock()) \(input.rawValue) / \(app.name) / \(resolution.source) / \(detail) / \(ok ? "ok" : "failed")"
+        let result = ActionExecutor.run(action)
+        let detail = result.detail ?? (action.description?.isEmpty == false ? action.description! : action.type)
+        lastEvent = "\(clock()) \(input.rawValue) / \(app.name) / \(resolution.source) / \(detail) / \(result.ok ? "ok" : "failed")"
     }
 
     private func currentAppContext() -> AppContext {
@@ -971,6 +987,10 @@ private struct ContentView: View {
 
             Button("清空计数") {
                 knobService.resetInputCounters()
+            }
+
+            Button("音量自检") {
+                knobService.testSystemVolume()
             }
 
             Button("请求权限") {
@@ -1458,21 +1478,34 @@ private struct DashboardTile: View {
     }
 }
 
+private struct ActionRunResult {
+    let ok: Bool
+    let detail: String?
+
+    static func success(_ detail: String? = nil) -> ActionRunResult {
+        ActionRunResult(ok: true, detail: detail)
+    }
+
+    static func failure(_ detail: String? = nil) -> ActionRunResult {
+        ActionRunResult(ok: false, detail: detail)
+    }
+}
+
 private enum ActionExecutor {
-    static func run(_ action: ActionConfig) -> Bool {
+    static func run(_ action: ActionConfig) -> ActionRunResult {
         switch action.type {
         case "shortcut", "key":
             return sendKeys(action.keys ?? [])
         case "mouse":
-            return click(button: action.button ?? "left", clicks: action.clicks ?? 1)
+            return click(button: action.button ?? "left", clicks: action.clicks ?? 1) ? .success() : .failure()
         case "scroll":
-            return scroll(dx: action.dx ?? 0, dy: action.dy ?? 0)
+            return scroll(dx: action.dx ?? 0, dy: action.dy ?? 0) ? .success() : .failure()
         case "shell":
-            return runShell(action.command)
+            return runShell(action.command) ? .success() : .failure()
         case "noop":
-            return true
+            return .success()
         default:
-            return false
+            return .failure("未知动作类型：\(action.type)")
         }
     }
 
@@ -1488,7 +1521,7 @@ private enum ActionExecutor {
         }
     }
 
-    private static func sendKeys(_ keys: [String]) -> Bool {
+    private static func sendKeys(_ keys: [String]) -> ActionRunResult {
         let normalized = keys.map { $0.lowercased() }
         if normalized.count == 1, SystemAudioController.canHandle(normalized[0]) {
             return SystemAudioController.handle(normalized[0])
@@ -1496,7 +1529,7 @@ private enum ActionExecutor {
 
         if normalized.count == 1, let media = mediaKeyTypes[normalized[0]] {
             sendMediaKey(media)
-            return true
+            return .success()
         }
 
         var flags = CGEventFlags()
@@ -1510,7 +1543,7 @@ private enum ActionExecutor {
             } else if let media = mediaKeyTypes[key] {
                 sendMediaKey(media)
             } else {
-                return false
+                return .failure("无法识别按键：\(key)")
             }
         }
 
@@ -1518,7 +1551,7 @@ private enum ActionExecutor {
             sendKey(keyCode, down: true, flags: flags)
             sendKey(keyCode, down: false, flags: flags)
         }
-        return true
+        return .success()
     }
 
     private static func sendKey(_ keyCode: CGKeyCode, down: Bool, flags: CGEventFlags) {
@@ -1609,11 +1642,22 @@ private let mediaKeyTypes: [String: Int] = [
 ]
 
 private enum SystemAudioController {
+    private struct VolumeSnapshot {
+        let value: Float32
+        let source: String
+    }
+
+    private struct VolumeWrite {
+        let ok: Bool
+        let source: String
+        let status: OSStatus
+    }
+
     static func canHandle(_ key: String) -> Bool {
         ["volume_down", "volume_up", "mute"].contains(key)
     }
 
-    static func handle(_ key: String) -> Bool {
+    static func handle(_ key: String) -> ActionRunResult {
         switch key {
         case "volume_down":
             return adjustVolume(by: -0.06)
@@ -1622,34 +1666,103 @@ private enum SystemAudioController {
         case "mute":
             return toggleMute()
         default:
-            return false
+            return .failure("无法处理系统音量按键：\(key)")
         }
     }
 
-    private static func adjustVolume(by delta: Float32) -> Bool {
-        guard let current = currentVolume() else { return false }
-        return setVolume(min(max(current + delta, 0), 1))
+    private static func adjustVolume(by delta: Float32) -> ActionRunResult {
+        guard let deviceID = defaultOutputDevice() else {
+            return .failure("找不到默认输出设备")
+        }
+
+        guard let before = currentVolume(deviceID: deviceID) else {
+            return .failure("无法读取默认输出设备音量（device \(deviceID)）")
+        }
+
+        let target = min(max(before.value + delta, 0), 1)
+        let write = setVolume(deviceID: deviceID, target)
+        let after = currentVolume(deviceID: deviceID)
+        let beforeText = percent(before.value)
+        let targetText = percent(target)
+        let afterText = after.map { percent($0.value) } ?? "未知"
+        let source = after?.source ?? write.source
+        let detail = "音量 \(beforeText) -> \(afterText)（目标 \(targetText)，\(source)，status \(write.status)）"
+        return write.ok ? .success(detail) : .failure(detail)
     }
 
-    private static func currentVolume() -> Float32? {
-        guard let deviceID = defaultOutputDevice() else { return nil }
+    private static func currentVolume(deviceID: AudioDeviceID) -> VolumeSnapshot? {
         var address = volumeAddress()
         var volume = Float32(0)
         var size = UInt32(MemoryLayout<Float32>.size)
         let status = AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &volume)
-        return status == noErr ? volume : nil
+        if status == noErr {
+            return VolumeSnapshot(value: volume, source: "VirtualMain")
+        }
+
+        var channelValues: [Float32] = []
+        for element in [AudioObjectPropertyElement(1), AudioObjectPropertyElement(2)] {
+            var channelAddress = scalarVolumeAddress(element: element)
+            guard AudioObjectHasProperty(deviceID, &channelAddress) else { continue }
+            var channelVolume = Float32(0)
+            var channelSize = UInt32(MemoryLayout<Float32>.size)
+            let channelStatus = AudioObjectGetPropertyData(deviceID, &channelAddress, 0, nil, &channelSize, &channelVolume)
+            if channelStatus == noErr {
+                channelValues.append(channelVolume)
+            }
+        }
+
+        guard !channelValues.isEmpty else { return nil }
+        let average = channelValues.reduce(Float32(0), +) / Float32(channelValues.count)
+        return VolumeSnapshot(value: average, source: "声道音量")
     }
 
-    private static func setVolume(_ volume: Float32) -> Bool {
-        guard let deviceID = defaultOutputDevice() else { return false }
+    private static func setVolume(deviceID: AudioDeviceID, _ volume: Float32) -> VolumeWrite {
         var address = volumeAddress()
         var newVolume = volume
         let size = UInt32(MemoryLayout<Float32>.size)
-        return AudioObjectSetPropertyData(deviceID, &address, 0, nil, size, &newVolume) == noErr
+        if AudioObjectHasProperty(deviceID, &address) {
+            var settable = DarwinBoolean(false)
+            var settableAddress = address
+            let settableStatus = AudioObjectIsPropertySettable(deviceID, &settableAddress, &settable)
+            if settableStatus == noErr, settable.boolValue {
+                let status = AudioObjectSetPropertyData(deviceID, &address, 0, nil, size, &newVolume)
+                if status == noErr {
+                    return VolumeWrite(ok: true, source: "VirtualMain", status: status)
+                }
+            }
+        }
+
+        var statuses: [OSStatus] = []
+        var successes = 0
+        for element in [AudioObjectPropertyElement(1), AudioObjectPropertyElement(2)] {
+            var channelAddress = scalarVolumeAddress(element: element)
+            guard AudioObjectHasProperty(deviceID, &channelAddress) else { continue }
+            var channelSettable = DarwinBoolean(false)
+            var settableAddress = channelAddress
+            let settableStatus = AudioObjectIsPropertySettable(deviceID, &settableAddress, &channelSettable)
+            guard settableStatus == noErr, channelSettable.boolValue else {
+                statuses.append(settableStatus)
+                continue
+            }
+            var channelVolume = volume
+            let status = AudioObjectSetPropertyData(deviceID, &channelAddress, 0, nil, size, &channelVolume)
+            statuses.append(status)
+            if status == noErr {
+                successes += 1
+            }
+        }
+
+        return VolumeWrite(
+            ok: successes > 0,
+            source: successes > 0 ? "声道音量" : "无可写音量属性",
+            status: statuses.first ?? -1
+        )
     }
 
-    private static func toggleMute() -> Bool {
-        guard let deviceID = defaultOutputDevice() else { return false }
+    private static func toggleMute() -> ActionRunResult {
+        guard let deviceID = defaultOutputDevice() else {
+            return .failure("找不到默认输出设备")
+        }
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyMute,
             mScope: kAudioDevicePropertyScopeOutput,
@@ -1658,10 +1771,18 @@ private enum SystemAudioController {
         var muted = UInt32(0)
         var size = UInt32(MemoryLayout<UInt32>.size)
         let readStatus = AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &muted)
-        guard readStatus == noErr else { return setVolume(0) }
+        guard readStatus == noErr else {
+            let before = currentVolume(deviceID: deviceID)
+            let write = setVolume(deviceID: deviceID, 0)
+            let after = currentVolume(deviceID: deviceID)
+            let detail = "静音 fallback：音量 \(before.map { percent($0.value) } ?? "未知") -> \(after.map { percent($0.value) } ?? "未知")（status \(write.status)）"
+            return write.ok ? .success(detail) : .failure(detail)
+        }
 
         var newMuted = muted == 0 ? UInt32(1) : UInt32(0)
-        return AudioObjectSetPropertyData(deviceID, &address, 0, nil, size, &newMuted) == noErr
+        let status = AudioObjectSetPropertyData(deviceID, &address, 0, nil, size, &newMuted)
+        let detail = muted == 0 ? "静音已开启（status \(status)）" : "静音已关闭（status \(status)）"
+        return status == noErr ? .success(detail) : .failure(detail)
     }
 
     private static func defaultOutputDevice() -> AudioDeviceID? {
@@ -1689,6 +1810,18 @@ private enum SystemAudioController {
             mScope: kAudioDevicePropertyScopeOutput,
             mElement: kAudioObjectPropertyElementMain
         )
+    }
+
+    private static func scalarVolumeAddress(element: AudioObjectPropertyElement) -> AudioObjectPropertyAddress {
+        AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyVolumeScalar,
+            mScope: kAudioDevicePropertyScopeOutput,
+            mElement: element
+        )
+    }
+
+    private static func percent(_ value: Float32) -> String {
+        "\(Int(round(value * 100)))%"
     }
 }
 
