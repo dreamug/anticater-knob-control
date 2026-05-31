@@ -1647,30 +1647,30 @@ private struct MacVolumeOverlayView: View {
     private let segmentCount = 16
 
     var body: some View {
-        HStack(spacing: 14) {
+        VStack(spacing: 22) {
             Image(systemName: payload.systemImage)
-                .font(.system(size: 26, weight: .semibold))
+                .font(.system(size: 52, weight: .medium))
                 .symbolRenderingMode(.hierarchical)
                 .foregroundStyle(.primary)
-                .frame(width: 30)
+                .frame(height: 58)
 
             HStack(spacing: 3) {
                 ForEach(0..<segmentCount, id: \.self) { index in
                     RoundedRectangle(cornerRadius: 2, style: .continuous)
                         .fill(index < filledSegments ? Color.primary.opacity(0.9) : Color.secondary.opacity(0.25))
-                        .frame(width: 6, height: 23)
+                        .frame(width: 7, height: 18)
                 }
             }
             .accessibilityLabel(payload.title)
         }
-        .padding(.horizontal, 18)
-        .frame(width: 188, height: 70)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .padding(.horizontal, 20)
+        .frame(width: 190, height: 150)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
                 .stroke(.white.opacity(0.14), lineWidth: 1)
         )
-        .shadow(color: .black.opacity(0.18), radius: 18, x: 0, y: 8)
+        .shadow(color: .black.opacity(0.24), radius: 24, x: 0, y: 12)
     }
 
     private var filledSegments: Int {
@@ -1756,10 +1756,19 @@ private final class OverlayPresenter {
     private func position(_ panel: NSPanel, for payload: ActionOverlayPayload) {
         let size = overlaySize(for: payload)
         let screenFrame = (NSScreen.main ?? NSScreen.screens.first)?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
-        let origin = NSPoint(
-            x: screenFrame.maxX - size.width - 28,
-            y: screenFrame.maxY - size.height - 34
-        )
+        let origin: NSPoint
+        switch payload.style {
+        case .action:
+            origin = NSPoint(
+                x: screenFrame.maxX - size.width - 28,
+                y: screenFrame.maxY - size.height - 34
+            )
+        case .macVolume:
+            origin = NSPoint(
+                x: screenFrame.midX - size.width / 2,
+                y: screenFrame.midY - size.height / 2
+            )
+        }
         panel.setFrame(NSRect(origin: origin, size: size), display: true)
         hostingView?.frame = NSRect(origin: .zero, size: size)
     }
@@ -1769,7 +1778,7 @@ private final class OverlayPresenter {
         case .action:
             return NSSize(width: 310, height: payload.progress == nil ? 88 : 108)
         case .macVolume:
-            return NSSize(width: 188, height: 70)
+            return NSSize(width: 190, height: 150)
         }
     }
 
