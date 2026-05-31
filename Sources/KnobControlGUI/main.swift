@@ -583,6 +583,14 @@ private final class KnobService: ObservableObject {
         let result = ActionExecutor.run(action)
         let detail = result.detail ?? action.description ?? "音量自检"
         lastEvent = "\(clock()) 音量自检 / \(detail) / \(result.ok ? "ok" : "failed")"
+        OverlayPresenter.shared.show(result.overlay ?? ActionOverlayPayload(
+            title: result.ok ? "音量自检完成" : "音量自检失败",
+            subtitle: detail,
+            systemImage: result.ok ? "speaker.wave.2.fill" : "exclamationmark.triangle.fill",
+            tint: result.ok ? .accentColor : .red,
+            progress: nil,
+            ok: result.ok
+        ))
     }
 
     func requestInputMonitoringAccess() {
@@ -740,18 +748,43 @@ private final class KnobService: ObservableObject {
     private func perform(input: KnobInput, app: AppContext, resolution: ActionResolution) {
         guard let action = resolution.action else {
             lastEvent = "\(clock()) \(input.rawValue) / \(app.name) / \(resolution.source) / 无动作"
+            OverlayPresenter.shared.show(ActionOverlayPayload(
+                title: "无动作",
+                subtitle: "\(gestureSymbol(input)) \(input.title) · \(resolution.source)",
+                systemImage: overlaySystemImage(for: input),
+                tint: .secondary,
+                progress: nil,
+                ok: true
+            ))
             return
         }
 
         refreshAccessibilityStatus()
         if ActionExecutor.needsAccessibility(action), !AXIsProcessTrusted() {
             lastEvent = "\(clock()) \(input.rawValue) / \(app.name) / \(resolution.source) / 需要辅助功能权限 / failed"
+            OverlayPresenter.shared.show(ActionOverlayPayload(
+                title: "需要辅助功能权限",
+                subtitle: "\(gestureSymbol(input)) \(input.title) · \(resolution.source)",
+                systemImage: "exclamationmark.triangle.fill",
+                tint: .orange,
+                progress: nil,
+                ok: false
+            ))
             return
         }
 
         let result = ActionExecutor.run(action)
         let detail = result.detail ?? (action.description?.isEmpty == false ? action.description! : action.type)
         lastEvent = "\(clock()) \(input.rawValue) / \(app.name) / \(resolution.source) / \(detail) / \(result.ok ? "ok" : "failed")"
+        let overlay = result.overlay ?? ActionOverlayPayload(
+            title: result.ok ? detail : "执行失败",
+            subtitle: "\(gestureSymbol(input)) \(input.title) · \(resolution.source)",
+            systemImage: result.ok ? overlaySystemImage(for: input) : "exclamationmark.triangle.fill",
+            tint: result.ok ? .accentColor : .red,
+            progress: nil,
+            ok: result.ok
+        )
+        OverlayPresenter.shared.show(overlay)
     }
 
     private func currentAppContext() -> AppContext {
@@ -1478,16 +1511,161 @@ private struct DashboardTile: View {
     }
 }
 
+private struct ActionOverlayPayload {
+    let title: String
+    let subtitle: String
+    let systemImage: String
+    let tint: Color
+    let progress: Double?
+    let ok: Bool
+}
+
+private struct ActionOverlayView: View {
+    let payload: ActionOverlayPayload
+
+    var body: some View {
+        HStack(spacing: 14) {
+            Image(systemName: payload.systemImage)
+                .font(.system(size: 26, weight: .semibold))
+                .foregroundStyle(payload.tint)
+                .frame(width: 36, height: 36)
+
+            VStack(alignment: .leading, spacing: 7) {
+                Text(payload.title)
+                    .font(.system(size: 17, weight: .semibold))
+                    .lineLimit(1)
+                Text(payload.subtitle)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+
+                if let progress = payload.progress {
+                    GeometryReader { proxy in
+                        ZStack(alignment: .leading) {
+                            Capsule()
+                                .fill(.secondary.opacity(0.18))
+                            Capsule()
+                                .fill(payload.tint)
+                                .frame(width: max(8, proxy.size.width * min(max(progress, 0), 1)))
+                        }
+                    }
+                    .frame(height: 7)
+                    .padding(.top, 1)
+                }
+            }
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 16)
+        .frame(width: 310, height: payload.progress == nil ? 88 : 108)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(.white.opacity(0.16), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.22), radius: 22, x: 0, y: 10)
+    }
+}
+
+private final class OverlayPanel: NSPanel {
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
+}
+
+@MainActor
+private final class OverlayPresenter {
+    static let shared = OverlayPresenter()
+
+    private var panel: OverlayPanel?
+    private var hostingView: NSHostingView<ActionOverlayView>?
+    private var hideWorkItem: DispatchWorkItem?
+
+    func show(_ payload: ActionOverlayPayload) {
+        hideWorkItem?.cancel()
+        let panel = panel(for: payload)
+        hostingView?.rootView = ActionOverlayView(payload: payload)
+        position(panel, for: payload)
+
+        panel.alphaValue = max(panel.alphaValue, 0.02)
+        panel.orderFrontRegardless()
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.12
+            panel.animator().alphaValue = 1
+        }
+
+        let workItem = DispatchWorkItem { [weak self] in
+            Task { @MainActor in self?.hide() }
+        }
+        hideWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.6, execute: workItem)
+    }
+
+    private func hide() {
+        guard let panel else { return }
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.18
+            panel.animator().alphaValue = 0
+        } completionHandler: {
+            panel.orderOut(nil)
+        }
+    }
+
+    private func panel(for payload: ActionOverlayPayload) -> OverlayPanel {
+        if let panel { return panel }
+
+        let size = overlaySize(for: payload)
+        let panel = OverlayPanel(
+            contentRect: NSRect(origin: .zero, size: size),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        panel.backgroundColor = .clear
+        panel.isOpaque = false
+        panel.hasShadow = false
+        panel.ignoresMouseEvents = true
+        panel.hidesOnDeactivate = false
+        panel.isReleasedWhenClosed = false
+        panel.level = .statusBar
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
+
+        let hostingView = NSHostingView(rootView: ActionOverlayView(payload: payload))
+        hostingView.frame = NSRect(origin: .zero, size: size)
+        hostingView.wantsLayer = true
+        hostingView.layer?.backgroundColor = NSColor.clear.cgColor
+        panel.contentView = hostingView
+
+        self.panel = panel
+        self.hostingView = hostingView
+        return panel
+    }
+
+    private func position(_ panel: NSPanel, for payload: ActionOverlayPayload) {
+        let size = overlaySize(for: payload)
+        let screenFrame = (NSScreen.main ?? NSScreen.screens.first)?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        let origin = NSPoint(
+            x: screenFrame.maxX - size.width - 28,
+            y: screenFrame.maxY - size.height - 34
+        )
+        panel.setFrame(NSRect(origin: origin, size: size), display: true)
+        hostingView?.frame = NSRect(origin: .zero, size: size)
+    }
+
+    private func overlaySize(for payload: ActionOverlayPayload) -> NSSize {
+        NSSize(width: 310, height: payload.progress == nil ? 88 : 108)
+    }
+}
+
 private struct ActionRunResult {
     let ok: Bool
     let detail: String?
+    let overlay: ActionOverlayPayload?
 
-    static func success(_ detail: String? = nil) -> ActionRunResult {
-        ActionRunResult(ok: true, detail: detail)
+    static func success(_ detail: String? = nil, overlay: ActionOverlayPayload? = nil) -> ActionRunResult {
+        ActionRunResult(ok: true, detail: detail, overlay: overlay)
     }
 
-    static func failure(_ detail: String? = nil) -> ActionRunResult {
-        ActionRunResult(ok: false, detail: detail)
+    static func failure(_ detail: String? = nil, overlay: ActionOverlayPayload? = nil) -> ActionRunResult {
+        ActionRunResult(ok: false, detail: detail, overlay: overlay)
     }
 }
 
@@ -1687,7 +1865,16 @@ private enum SystemAudioController {
         let afterText = after.map { percent($0.value) } ?? "未知"
         let source = after?.source ?? write.source
         let detail = "音量 \(beforeText) -> \(afterText)（目标 \(targetText)，\(source)，status \(write.status)）"
-        return write.ok ? .success(detail) : .failure(detail)
+        let overlayValue = Double(after?.value ?? target)
+        let overlay = ActionOverlayPayload(
+            title: "音量 \(afterText)",
+            subtitle: delta > 0 ? "提高音量 · \(source)" : "降低音量 · \(source)",
+            systemImage: speakerImage(for: Float32(overlayValue)),
+            tint: write.ok ? .accentColor : .red,
+            progress: overlayValue,
+            ok: write.ok
+        )
+        return write.ok ? .success(detail, overlay: overlay) : .failure(detail, overlay: overlay)
     }
 
     private static func currentVolume(deviceID: AudioDeviceID) -> VolumeSnapshot? {
@@ -1776,13 +1963,30 @@ private enum SystemAudioController {
             let write = setVolume(deviceID: deviceID, 0)
             let after = currentVolume(deviceID: deviceID)
             let detail = "静音 fallback：音量 \(before.map { percent($0.value) } ?? "未知") -> \(after.map { percent($0.value) } ?? "未知")（status \(write.status)）"
-            return write.ok ? .success(detail) : .failure(detail)
+            let overlay = ActionOverlayPayload(
+                title: "静音",
+                subtitle: "音量 \(after.map { percent($0.value) } ?? "未知")",
+                systemImage: "speaker.slash.fill",
+                tint: write.ok ? .accentColor : .red,
+                progress: after.map { Double($0.value) },
+                ok: write.ok
+            )
+            return write.ok ? .success(detail, overlay: overlay) : .failure(detail, overlay: overlay)
         }
 
         var newMuted = muted == 0 ? UInt32(1) : UInt32(0)
         let status = AudioObjectSetPropertyData(deviceID, &address, 0, nil, size, &newMuted)
         let detail = muted == 0 ? "静音已开启（status \(status)）" : "静音已关闭（status \(status)）"
-        return status == noErr ? .success(detail) : .failure(detail)
+        let ok = status == noErr
+        let overlay = ActionOverlayPayload(
+            title: muted == 0 ? "静音" : "取消静音",
+            subtitle: "默认输出设备",
+            systemImage: muted == 0 ? "speaker.slash.fill" : "speaker.wave.2.fill",
+            tint: ok ? .accentColor : .red,
+            progress: nil,
+            ok: ok
+        )
+        return ok ? .success(detail, overlay: overlay) : .failure(detail, overlay: overlay)
     }
 
     private static func defaultOutputDevice() -> AudioDeviceID? {
@@ -1822,6 +2026,16 @@ private enum SystemAudioController {
 
     private static func percent(_ value: Float32) -> String {
         "\(Int(round(value * 100)))%"
+    }
+
+    private static func speakerImage(for value: Float32) -> String {
+        if value <= 0.01 {
+            return "speaker.slash.fill"
+        }
+        if value < 0.36 {
+            return "speaker.wave.1.fill"
+        }
+        return "speaker.wave.2.fill"
     }
 }
 
@@ -2008,6 +2222,16 @@ private func gestureSymbol(_ input: KnobInput) -> String {
     case .press: return "●"
     case .pressRotateLeft: return "●↺"
     case .pressRotateRight: return "●↻"
+    }
+}
+
+private func overlaySystemImage(for input: KnobInput) -> String {
+    switch input {
+    case .rotateLeft: return "arrow.counterclockwise"
+    case .rotateRight: return "arrow.clockwise"
+    case .press: return "circle.fill"
+    case .pressRotateLeft: return "arrow.counterclockwise.circle.fill"
+    case .pressRotateRight: return "arrow.clockwise.circle.fill"
     }
 }
 
