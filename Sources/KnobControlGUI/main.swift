@@ -1647,30 +1647,45 @@ private struct MacVolumeOverlayView: View {
     private let segmentCount = 16
 
     var body: some View {
-        VStack(spacing: 22) {
+        VStack(spacing: 0) {
+            Spacer(minLength: 28)
+
             Image(systemName: payload.systemImage)
-                .font(.system(size: 52, weight: .medium))
+                .font(.system(size: 86, weight: .medium))
                 .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(.primary)
-                .frame(height: 58)
+                .foregroundStyle(.white.opacity(0.82))
+                .frame(height: 92)
+
+            Spacer(minLength: 16)
 
             HStack(spacing: 3) {
                 ForEach(0..<segmentCount, id: \.self) { index in
-                    RoundedRectangle(cornerRadius: 2, style: .continuous)
-                        .fill(index < filledSegments ? Color.primary.opacity(0.9) : Color.secondary.opacity(0.25))
-                        .frame(width: 7, height: 18)
+                    Rectangle()
+                        .fill(index < filledSegments ? Color.white.opacity(0.82) : Color.black.opacity(0.34))
+                        .frame(width: 8, height: 8)
                 }
             }
             .accessibilityLabel(payload.title)
+
+            Spacer(minLength: 24)
         }
-        .padding(.horizontal, 20)
-        .frame(width: 190, height: 150)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .stroke(.white.opacity(0.14), lineWidth: 1)
+        .frame(width: 228, height: 228)
+        .background(
+            LinearGradient(
+                colors: [
+                    Color.black.opacity(0.58),
+                    Color.black.opacity(0.48)
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            ),
+            in: RoundedRectangle(cornerRadius: 22, style: .continuous)
         )
-        .shadow(color: .black.opacity(0.24), radius: 24, x: 0, y: 12)
+        .overlay(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(.white.opacity(0.08), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.28), radius: 28, x: 0, y: 14)
     }
 
     private var filledSegments: Int {
@@ -1778,7 +1793,7 @@ private final class OverlayPresenter {
         case .action:
             return NSSize(width: 310, height: payload.progress == nil ? 88 : 108)
         case .macVolume:
-            return NSSize(width: 190, height: 150)
+            return NSSize(width: 228, height: 228)
         }
     }
 
@@ -2175,7 +2190,7 @@ private enum SystemAudioController {
         if value < 0.36 {
             return "speaker.wave.1.fill"
         }
-        return "speaker.wave.2.fill"
+        return "speaker.wave.3.fill"
     }
 }
 
@@ -2209,11 +2224,11 @@ private let keyNameByCode: [CGKeyCode: String] = {
 private func knobInput(page: UInt32, usage: UInt32) -> KnobInput? {
     guard page == 0x000c else { return nil }
     switch usage {
-    case 0x00e9: return .rotateLeft
-    case 0x00ea: return .rotateRight
+    case 0x00e9: return .rotateRight
+    case 0x00ea: return .rotateLeft
     case 0x00e2: return .press
-    case 0x006f: return .pressRotateLeft
-    case 0x0070: return .pressRotateRight
+    case 0x006f: return .pressRotateRight
+    case 0x0070: return .pressRotateLeft
     default: return nil
     }
 }
