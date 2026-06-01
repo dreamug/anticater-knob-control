@@ -1167,7 +1167,6 @@ private struct ContentView: View {
                 Button(knobService.isRunning ? "停止监听" : "启动监听") {
                     knobService.toggle(store: store)
                 }
-                .keyboardShortcut("r", modifiers: [.command])
 
                 Button("重新加载") {
                     store.reload()
@@ -1176,7 +1175,6 @@ private struct ContentView: View {
                 Button("保存配置") {
                     store.save()
                 }
-                .keyboardShortcut("s", modifiers: [.command])
             }
 
             StatusDashboard(
