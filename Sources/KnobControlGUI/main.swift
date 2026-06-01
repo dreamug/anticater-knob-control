@@ -361,7 +361,7 @@ private final class ConfigStore: ObservableObject {
                 status = "已加载本地配置：\(configURL.path)"
             }
         } catch {
-            config = MappingConfig(global: defaultActions(), apps: [:])
+            config = MappingConfig(global: globalDefaultActions(), apps: [:])
             save(silent: true)
             status = "配置加载失败，已创建本地配置：\(configURL.path)"
         }
@@ -455,6 +455,12 @@ private final class ConfigStore: ObservableObject {
             }
             status = "已应用「\(template.title)」模板\(modeSuffix)"
         }
+        save(silent: true)
+    }
+
+    func restoreGlobalMediaDefault() {
+        config.global = globalDefaultActions()
+        status = "已恢复全局音量默认"
         save(silent: true)
     }
 
@@ -1248,6 +1254,12 @@ private struct ContentView: View {
                 }
 
                 Menu("监听工具") {
+                    Button("恢复全局音量默认") {
+                        store.restoreGlobalMediaDefault()
+                    }
+
+                    Divider()
+
                     Button("解除三击锁定") {
                         knobService.clearMappingLock()
                     }
@@ -2433,6 +2445,10 @@ private func defaultActions() -> [String: ActionConfig] {
         actions[input.rawValue] = ActionConfig.empty()
     }
     return actions
+}
+
+private func globalDefaultActions() -> [String: ActionConfig] {
+    templateActions(.media)
 }
 
 private func templateActions(_ template: ActionTemplate) -> [String: ActionConfig] {
