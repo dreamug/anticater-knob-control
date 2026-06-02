@@ -180,6 +180,21 @@ private struct ActionConfig: Codable, Equatable {
     static func empty() -> ActionConfig {
         ActionConfig(type: "noop", description: "", keys: [], button: "left", clicks: 1, dx: 0, dy: 0, command: "")
     }
+
+    var isConfiguredAction: Bool {
+        switch type {
+        case "shortcut", "key":
+            return !(keys ?? []).isEmpty
+        case "mouse":
+            return (clicks ?? 0) > 0
+        case "scroll":
+            return (dx ?? 0) != 0 || (dy ?? 0) != 0
+        case "shell":
+            return command?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        default:
+            return false
+        }
+    }
 }
 
 private struct AppInfo: Identifiable, Hashable {
@@ -369,6 +384,14 @@ private final class ConfigStore: ObservableObject {
 
     var sortedAppIDs: [String] {
         config.apps.keys.sorted()
+    }
+
+    var configuredAppIDsWithActions: [String] {
+        config.apps.keys
+            .filter { bundleID in
+                config.apps[bundleID]?.values.contains { $0.isConfiguredAction } == true
+            }
+            .sorted()
     }
 
     func title(for profile: ProfileID) -> String {
@@ -702,10 +725,28 @@ private final class KnobService: ObservableObject {
         lastEvent = "\(clock()) 已停止监听"
     }
 
-    func clearMappingLock() {
+    func clearMappingLock(showOverlay: Bool = false) {
         lockedBundleID = nil
         lockedAppName = nil
         lastEvent = "\(clock()) 已恢复全局默认"
+        if showOverlay {
+            showMappingStateOverlay(
+                title: "已恢复全局默认",
+                subtitle: "使用全局音量默认",
+                systemImage: "lock.open.fill"
+            )
+        }
+    }
+
+    func selectMappingLock(bundleID: String, appName: String) {
+        lockedBundleID = bundleID
+        lockedAppName = appName
+        lastEvent = "\(clock()) 已切换映射：\(appName)"
+        showMappingStateOverlay(
+            title: "已切换到 \(appName)",
+            subtitle: "应用映射已准备",
+            systemImage: "lock.fill"
+        )
     }
 
     func inputCount(for input: KnobInput) -> Int {
@@ -855,14 +896,11 @@ private final class KnobService: ObservableObject {
             lockedBundleID = nil
             lockedAppName = nil
             lastEvent = "\(clock()) 三击 / 控制台使用全局默认"
-            OverlayPresenter.shared.show(ActionOverlayPayload(
+            showMappingStateOverlay(
                 title: "已恢复全局默认",
                 subtitle: "控制台不启用应用锁定",
-                systemImage: "lock.open.fill",
-                tint: .accentColor,
-                progress: nil,
-                ok: true
-            ))
+                systemImage: "lock.open.fill"
+            )
             return
         }
 
@@ -870,27 +908,32 @@ private final class KnobService: ObservableObject {
             lockedBundleID = nil
             lockedAppName = nil
             lastEvent = "\(clock()) 三击 / 已恢复全局默认"
-            OverlayPresenter.shared.show(ActionOverlayPayload(
+            showMappingStateOverlay(
                 title: "已恢复全局默认",
                 subtitle: app.name,
-                systemImage: "lock.open.fill",
-                tint: .accentColor,
-                progress: nil,
-                ok: true
-            ))
+                systemImage: "lock.open.fill"
+            )
         } else {
             lockedBundleID = app.bundleID
             lockedAppName = app.name
             lastEvent = "\(clock()) 三击 / 已锁定 \(app.name)"
-            OverlayPresenter.shared.show(ActionOverlayPayload(
+            showMappingStateOverlay(
                 title: "已锁定 \(app.name)",
                 subtitle: "应用映射已生效",
-                systemImage: "lock.fill",
-                tint: .accentColor,
-                progress: nil,
-                ok: true
-            ))
+                systemImage: "lock.fill"
+            )
         }
+    }
+
+    private func showMappingStateOverlay(title: String, subtitle: String, systemImage: String) {
+        OverlayPresenter.shared.show(ActionOverlayPayload(
+            title: title,
+            subtitle: subtitle,
+            systemImage: systemImage,
+            tint: .accentColor,
+            progress: nil,
+            ok: true
+        ))
     }
 
     private func schedulePendingPressFlush() {
@@ -966,28 +1009,12 @@ private final class KnobService: ObservableObject {
         let gestureTitle = modifierMode.gestureTitle(for: input)
         guard let action = resolution.action else {
             lastEvent = "\(clock()) \(gestureTitle) / \(app.name) / \(resolution.source) / 无动作"
-            OverlayPresenter.shared.show(ActionOverlayPayload(
-                title: "无动作",
-                subtitle: "\(gestureTitle) · \(resolution.source)",
-                systemImage: overlaySystemImage(for: input),
-                tint: .secondary,
-                progress: nil,
-                ok: true
-            ))
             return
         }
 
         refreshAccessibilityStatus()
         if ActionExecutor.needsAccessibility(action), !AXIsProcessTrusted() {
             lastEvent = "\(clock()) \(gestureTitle) / \(app.name) / \(resolution.source) / 需要辅助功能权限 / failed"
-            OverlayPresenter.shared.show(ActionOverlayPayload(
-                title: "需要辅助功能权限",
-                subtitle: "\(gestureTitle) · \(resolution.source)",
-                systemImage: "exclamationmark.triangle.fill",
-                tint: .orange,
-                progress: nil,
-                ok: false
-            ))
             return
         }
 
@@ -1002,7 +1029,9 @@ private final class KnobService: ObservableObject {
             progress: nil,
             ok: result.ok
         )
-        OverlayPresenter.shared.show(overlay)
+        if overlay.style == .macVolume {
+            OverlayPresenter.shared.show(overlay)
+        }
     }
 
     private func currentAppContext() -> AppContext {
@@ -1060,6 +1089,35 @@ private struct KnobControlApp: App {
             Button(knobService.isRunning ? "停止监听" : "启动监听") {
                 knobService.toggle(store: store)
             }
+
+            Menu("切换映射") {
+                Button {
+                    knobService.clearMappingLock(showOverlay: true)
+                } label: {
+                    Label("全局默认", systemImage: knobService.lockedBundleID == nil ? "checkmark.circle.fill" : "circle")
+                }
+
+                if store.configuredAppIDsWithActions.isEmpty {
+                    Text("暂无已配置应用")
+                } else {
+                    Divider()
+                    ForEach(store.configuredAppIDsWithActions, id: \.self) { bundleID in
+                        let info = appCatalog.app(bundleID: bundleID)
+                        Button {
+                            knobService.selectMappingLock(
+                                bundleID: bundleID,
+                                appName: info?.name ?? bundleID
+                            )
+                        } label: {
+                            Label(
+                                info?.name ?? bundleID,
+                                systemImage: knobService.lockedBundleID == bundleID ? "checkmark.circle.fill" : "app"
+                            )
+                        }
+                    }
+                }
+            }
+
             Divider()
             Text(knobService.deviceStatus)
             Text(knobService.inputAccessStatus)
@@ -1261,7 +1319,7 @@ private struct ContentView: View {
                     Divider()
 
                     Button("解除三击锁定") {
-                        knobService.clearMappingLock()
+                        knobService.clearMappingLock(showOverlay: true)
                     }
                     .disabled(knobService.lockedBundleID == nil)
 
