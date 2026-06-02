@@ -646,6 +646,16 @@ private final class KnobService: ObservableObject {
 
         refreshInputAccessStatus()
         refreshAccessibilityStatus()
+        guard hasInputMonitoringAccess() else {
+            let granted = IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)
+            refreshInputAccessStatus()
+            deviceStatus = "等待输入监控权限"
+            lastEvent = granted
+                ? "\(clock()) 输入监控权限已允许，请重新启动监听"
+                : "\(clock()) 请允许输入监控后再启动监听"
+            return
+        }
+
         self.store = store
         let manager = IOHIDManagerCreate(kCFAllocatorDefault, IOOptionBits(kIOHIDOptionsTypeNone))
         self.manager = manager
@@ -674,13 +684,13 @@ private final class KnobService: ObservableObject {
             let page = IOHIDElementGetUsagePage(element)
             let usage = IOHIDElementGetUsage(element)
             let intValue = IOHIDValueGetIntegerValue(value)
-            let input = knobInput(page: page, usage: usage)
+            let input = knobInput(page: page, usage: usage, intValue: intValue)
 
             Task { @MainActor in
                 service.recordHIDEvent(page: page, usage: usage, intValue: intValue, input: input)
             }
 
-            guard intValue == 1, let input else {
+            guard let input else {
                 return
             }
 
@@ -984,7 +994,7 @@ private final class KnobService: ObservableObject {
 
     private func recordHIDEvent(page: UInt32, usage: UInt32, intValue: Int, input: KnobInput?) {
         rawEventCount += 1
-        if intValue == 1, input != nil {
+        if input != nil {
             decodedEventCount += 1
         } else {
             ignoredEventCount += 1
@@ -1003,6 +1013,10 @@ private final class KnobService: ObservableObject {
         } else {
             inputAccessStatus = "输入监控：未决定"
         }
+    }
+
+    private func hasInputMonitoringAccess() -> Bool {
+        IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted
     }
 
     private func perform(input: KnobInput, modifierMode: ModifierMode, app: AppContext, resolution: ActionResolution) {
@@ -2485,15 +2499,30 @@ private let keyNameByCode: [CGKeyCode: String] = {
     return result
 }()
 
-private func knobInput(page: UInt32, usage: UInt32) -> KnobInput? {
-    guard page == 0x000c else { return nil }
-    switch usage {
-    case 0x00e9: return .rotateRight
-    case 0x00ea: return .rotateLeft
-    case 0x00e2: return .press
-    case 0x006f: return .pressRotateRight
-    case 0x0070: return .pressRotateLeft
-    default: return nil
+private func knobInput(page: UInt32, usage: UInt32, intValue: Int) -> KnobInput? {
+    guard intValue != 0 else { return nil }
+
+    switch page {
+    case 0x000c:
+        switch usage {
+        case 0x00e9: return .rotateRight
+        case 0x00ea: return .rotateLeft
+        case 0x00e2: return .press
+        case 0x006f: return .pressRotateRight
+        case 0x0070: return .pressRotateLeft
+        default: return nil
+        }
+    case 0x0001:
+        switch usage {
+        case 0x0037, 0x0038:
+            return intValue > 0 ? .rotateRight : .rotateLeft
+        default:
+            return nil
+        }
+    case 0x0009:
+        return .press
+    default:
+        return nil
     }
 }
 
