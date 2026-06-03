@@ -604,6 +604,7 @@ private final class KnobService: ObservableObject {
     @Published private(set) var decodedEventCount = 0
     @Published private(set) var ignoredEventCount = 0
     @Published private(set) var lastRawEvent = "暂无 HID 输入"
+    @Published private(set) var recentRawEvents: [String] = []
     @Published private(set) var inputAccessStatus = "输入监控：未检查"
     @Published private(set) var accessibilityStatus = "辅助功能：未检查"
 
@@ -616,6 +617,7 @@ private final class KnobService: ObservableObject {
     private var lastExternalApp: AppContext?
     private var listenMode = "未监听"
     private var connectedDeviceName: String?
+    private var hidOpenStatus = "尚未打开 HID manager"
 
     var lockModeTitle: String {
         if let lockedAppName {
@@ -650,6 +652,7 @@ private final class KnobService: ObservableObject {
             let granted = IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)
             refreshInputAccessStatus()
             deviceStatus = "等待输入监控权限"
+            hidOpenStatus = "未打开：缺少输入监控权限"
             lastEvent = granted
                 ? "\(clock()) 输入监控权限已允许，请重新启动监听"
                 : "\(clock()) 请允许输入监控后再启动监听"
@@ -707,6 +710,7 @@ private final class KnobService: ObservableObject {
             let openResult = IOHIDManagerOpen(manager, IOOptionBits(kIOHIDOptionsTypeNone))
             guard openResult == kIOReturnSuccess else {
                 deviceStatus = "启动失败：独占 0x\(hex(UInt32(bitPattern: seizedResult), width: 8)) / 普通 0x\(hex(UInt32(bitPattern: openResult), width: 8))"
+                hidOpenStatus = "打开失败：seize=0x\(hex(UInt32(bitPattern: seizedResult), width: 8)) normal=0x\(hex(UInt32(bitPattern: openResult), width: 8))"
                 lastEvent = "请在系统设置里重新添加「手轮控制台」到输入监控"
                 self.manager = nil
                 return
@@ -714,6 +718,7 @@ private final class KnobService: ObservableObject {
             listenMode = "普通监听"
             deviceStatus = "已启动普通监听，系统音量可能仍会响应"
         }
+        hidOpenStatus = "\(listenMode)：seize=0x\(hex(UInt32(bitPattern: seizedResult), width: 8))"
 
         if let devices = IOHIDManagerCopyDevices(manager) as? Set<IOHIDDevice>, let first = devices.first {
             updateConnectedDevice(deviceName(first))
@@ -731,6 +736,7 @@ private final class KnobService: ObservableObject {
         self.manager = nil
         isRunning = false
         listenMode = "未监听"
+        hidOpenStatus = "已停止"
         deviceStatus = "已停止"
         lastEvent = "\(clock()) 已停止监听"
     }
@@ -772,7 +778,17 @@ private final class KnobService: ObservableObject {
         decodedEventCount = 0
         ignoredEventCount = 0
         lastRawEvent = "暂无 HID 输入"
+        recentRawEvents = []
         lastEvent = "\(clock()) 已清空输入计数"
+    }
+
+    func copyDebugReport(store: ConfigStore, frontmost: FrontmostAppModel) {
+        refreshInputAccessStatus()
+        refreshAccessibilityStatus()
+        let report = debugReport(store: store, frontmost: frontmost)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(report, forType: .string)
+        lastEvent = "\(clock()) 已复制诊断报告"
     }
 
     func testSystemVolume() {
@@ -1002,6 +1018,10 @@ private final class KnobService: ObservableObject {
 
         let decoded = input.map { " -> \($0.title)" } ?? ""
         lastRawEvent = "page=0x\(hex(page, width: 4)) usage=0x\(hex(usage, width: 4)) int=\(intValue)\(decoded)"
+        recentRawEvents.append("\(clock()) \(lastRawEvent)")
+        if recentRawEvents.count > 80 {
+            recentRawEvents.removeFirst(recentRawEvents.count - 80)
+        }
     }
 
     private func refreshInputAccessStatus() {
@@ -1017,6 +1037,80 @@ private final class KnobService: ObservableObject {
 
     private func hasInputMonitoringAccess() -> Bool {
         IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted
+    }
+
+    private func debugReport(store: ConfigStore, frontmost: FrontmostAppModel) -> String {
+        var lines: [String] = []
+        let bundle = Bundle.main
+        let officialApps = NSWorkspace.shared.runningApplications.filter {
+            ($0.bundleIdentifier ?? "").lowercased() == "com.lqkj.keyboard.anticater"
+                || ($0.localizedName ?? "").lowercased().contains("anticater")
+        }
+
+        lines.append("ANTICATER 手轮控制台诊断报告")
+        lines.append("生成时间：\(Date())")
+        lines.append("")
+        lines.append("App")
+        lines.append("- 名称：\(bundle.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "unknown")")
+        lines.append("- Bundle ID：\(bundle.bundleIdentifier ?? "unknown")")
+        lines.append("- 版本：\(bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown") (\(bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown"))")
+        lines.append("- 路径：\(bundle.bundlePath)")
+        lines.append("")
+        lines.append("权限 / 状态")
+        lines.append("- 输入监控：\(inputAccessStatus)")
+        lines.append("- 辅助功能：\(accessibilityStatus)")
+        lines.append("- 是否监听中：\(isRunning ? "是" : "否")")
+        lines.append("- 设备状态：\(deviceStatus)")
+        lines.append("- HID 打开状态：\(hidOpenStatus)")
+        lines.append("- 连接设备：\(connectedDeviceName ?? "无")")
+        lines.append("- 最近动作：\(lastEvent)")
+        lines.append("- 当前前台应用：\(frontmost.name) / \(frontmost.bundleID)")
+        lines.append("- 映射模式：\(lockModeTitle)")
+        lines.append("- 配置文件：\(store.configURL.path)")
+        lines.append("")
+        lines.append("官方 ANTICATER")
+        if officialApps.isEmpty {
+            lines.append("- 未发现正在运行的官方 ANTICATER App")
+        } else {
+            for app in officialApps {
+                lines.append("- 运行中：pid=\(app.processIdentifier) name=\(app.localizedName ?? "unknown") bundle=\(app.bundleIdentifier ?? "unknown") path=\(app.bundleURL?.path ?? "unknown")")
+            }
+        }
+        lines.append("")
+        lines.append("目标设备")
+        lines.append("- 目标 VendorID：0x\(hex(vendorID, width: 4))")
+        lines.append("- 目标 ProductID：0x\(hex(productID, width: 4))")
+        lines.append("- 系统 HID 枚举：")
+        let devices = diagnosticHIDDevices()
+        if devices.isEmpty {
+            lines.append("  - 未枚举到目标或疑似 ANTICATER/CXKJ 设备")
+        } else {
+            lines.append(contentsOf: devices.map { "  - \($0)" })
+        }
+        lines.append("")
+        lines.append("输入统计")
+        lines.append("- 原始事件：\(rawEventCount)")
+        lines.append("- 已识别：\(decodedEventCount)")
+        lines.append("- 已忽略：\(ignoredEventCount)")
+        lines.append("- 最近输入：\(lastInput.map { lastModifierMode.gestureTitle(for: $0) } ?? "暂无")")
+        lines.append("- 最后一条 HID：\(lastRawEvent)")
+        for input in KnobInput.allCases {
+            lines.append("- \(input.title)：\(inputCounts[input, default: 0])")
+        }
+        lines.append("")
+        lines.append("最近原始 HID 事件")
+        if recentRawEvents.isEmpty {
+            lines.append("- 暂无")
+        } else {
+            lines.append(contentsOf: recentRawEvents.suffix(40).map { "- \($0)" })
+        }
+        lines.append("")
+        lines.append("排查提示")
+        lines.append("- 如果系统 HID 枚举里没有 0x\(hex(vendorID, width: 4))/0x\(hex(productID, width: 4))，可能是配对设备或固件/驱动的 VID/PID 不同。")
+        lines.append("- 如果输入监控不是已允许，App 会识别到设备但收不到输入。")
+        lines.append("- 如果原始事件有值但已识别为 0，请把最近原始 HID 事件发回来补映射。")
+        lines.append("- 如果官方 ANTICATER App 正在运行，可以退出后再试一次。")
+        return lines.joined(separator: "\n")
     }
 
     private func perform(input: KnobInput, modifierMode: ModifierMode, app: AppContext, resolution: ActionResolution) {
@@ -1343,6 +1437,12 @@ private struct ContentView: View {
 
                     Button("音量自检") {
                         knobService.testSystemVolume()
+                    }
+
+                    Divider()
+
+                    Button("复制诊断报告") {
+                        knobService.copyDebugReport(store: store, frontmost: frontmost)
                     }
                 }
 
@@ -2610,6 +2710,45 @@ private func deviceName(_ device: IOHIDDevice) -> String {
 
 private func property(_ device: IOHIDDevice, _ key: String) -> String? {
     IOHIDDeviceGetProperty(device, key as CFString).map { "\($0)" }
+}
+
+private func intProperty(_ device: IOHIDDevice, _ key: String) -> Int? {
+    IOHIDDeviceGetProperty(device, key as CFString).flatMap { $0 as? NSNumber }?.intValue
+}
+
+private func diagnosticHIDDevices() -> [String] {
+    let manager = IOHIDManagerCreate(kCFAllocatorDefault, IOOptionBits(kIOHIDOptionsTypeNone))
+    IOHIDManagerSetDeviceMatching(manager, [:] as CFDictionary)
+    let openResult = IOHIDManagerOpen(manager, IOOptionBits(kIOHIDOptionsTypeNone))
+    defer { IOHIDManagerClose(manager, IOOptionBits(kIOHIDOptionsTypeNone)) }
+
+    guard openResult == kIOReturnSuccess,
+          let devices = IOHIDManagerCopyDevices(manager) as? Set<IOHIDDevice> else {
+        return ["HID 枚举失败：0x\(hex(UInt32(bitPattern: openResult), width: 8))"]
+    }
+
+    return devices.compactMap { device in
+        let product = property(device, kIOHIDProductKey) ?? "unknown"
+        let manufacturer = property(device, kIOHIDManufacturerKey) ?? "unknown"
+        let serial = property(device, kIOHIDSerialNumberKey) ?? "unknown"
+        let transport = property(device, kIOHIDTransportKey) ?? "unknown"
+        let vendor = intProperty(device, kIOHIDVendorIDKey)
+        let productNumber = intProperty(device, kIOHIDProductIDKey)
+        let usagePage = intProperty(device, kIOHIDPrimaryUsagePageKey)
+        let usage = intProperty(device, kIOHIDPrimaryUsageKey)
+        let combined = "\(product) \(manufacturer) \(serial)".lowercased()
+        let isTarget = vendor == vendorID && productNumber == productID
+        let isSuspicious = combined.contains("anticater") || combined.contains("cxkj")
+
+        guard isTarget || isSuspicious else { return nil }
+
+        let vendorText = vendor.map { "0x\(hex($0, width: 4))" } ?? "unknown"
+        let productText = productNumber.map { "0x\(hex($0, width: 4))" } ?? "unknown"
+        let usagePageText = usagePage.map { "0x\(hex($0, width: 4))" } ?? "unknown"
+        let usageText = usage.map { "0x\(hex($0, width: 4))" } ?? "unknown"
+        return "product=\(product) manufacturer=\(manufacturer) serial=\(serial) transport=\(transport) vendor=\(vendorText) productID=\(productText) usagePage=\(usagePageText) usage=\(usageText)"
+    }
+    .sorted()
 }
 
 private func appName(bundle: Bundle, url: URL) -> String {
